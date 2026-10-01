@@ -1,6 +1,6 @@
 {
   "name": "dsh-image-studio",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "An Images workspace for DeepSeek Harness: one page to generate with fal.ai, browse every result, compare candidates, and animate the winner with Kling image-to-video.",
   "keywords": [
     "dsh-plugin",
@@ -23,7 +23,8 @@
     "./client": "./client.js",
     "./package.json": "./package.json",
     "./icon.svg": "./icon.svg",
-    "./cordis.patch.yml": "./cordis.patch.yml"
+    "./cordis.patch.yml": "./cordis.patch.yml",
+    "./locale/*.json": "./locale/*.json"
   },
   "files": [
     "index.js",
@@ -33,6 +34,7 @@
     "compatibility.json",
     "AGENTS.md",
     "lib/*.js",
+    "locale/*.json",
     "README.md",
     "README.ru.md",
     "LICENSE"

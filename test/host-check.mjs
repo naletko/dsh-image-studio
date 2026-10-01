@@ -14,7 +14,7 @@ import path from 'node:path';
 import test from 'node:test';
 import { Writable } from 'node:stream';
 
-import { apply, isLocalRequest, pickConfig, publicEntry } from '../index.js';
+import { apply, inject as declaredInject, isLocalRequest, pickConfig, publicEntry } from '../index.js';
 import { addEntries, newId, writeEntryFile } from '../lib/gallery.js';
 
 /** A 1×1 PNG, so downloaded media is really an image. */
@@ -99,9 +99,14 @@ async function call(handler, request) {
 /**
  * Mount the plugin against a fresh studio root and return its handler.
  *
+ * The context reproduces Cordis' central rule: reading a service the plugin did
+ * not declare in `inject` throws. Without that the suite would happily pass on a
+ * plugin the live harness answers with HTTP 500 — which is exactly what happened
+ * before `credentials` was declared.
+ *
  * @param options.credentials - an in-memory credential store.
  * @param options.config - the row configuration.
- * @returns `{ handler, root, credentials, dispose }`.
+ * @returns `{ handler, root, credentials }`.
  */
 function mount({ credentials = fakeCredentials(), config = {} } = {}) {
 	const root = path.join(import.meta.dirname, '.tmp', `host-${newId()}`);
@@ -109,11 +114,21 @@ function mount({ credentials = fakeCredentials(), config = {} } = {}) {
 	process.env.DSH_IMAGE_STUDIO_HOME = root;
 
 	let registered;
-	const ctx = {
+	const services = {
 		webServer: { register: (options) => { registered = options; return () => {}; } },
-		effect: (fn) => fn(),
 		credentials,
 	};
+
+	const ctx = { effect: (fn) => fn() };
+	for (const name of Object.keys(services)) {
+		Object.defineProperty(ctx, name, {
+			get() {
+				if (!declaredInject.includes(name)) throw new Error(`cannot get property "${name}" without inject`);
+				return services[name];
+			},
+		});
+	}
+
 	apply(ctx, config);
 	assert.ok(registered, 'the plugin must register its HTTP surface');
 	return { handler: registered.handler, root, credentials };
@@ -135,6 +150,33 @@ async function waitForJob(handler, id, timeoutMs = 3000) {
 		await new Promise((resolve) => setTimeout(resolve, 20));
 	}
 }
+
+test('the plugin declares every service it reads', () => {
+	// Cordis refuses an undeclared service read, so the declaration list is part
+	// of the contract rather than documentation.
+	assert.ok(declaredInject.includes('webServer'));
+	assert.ok(declaredInject.includes('credentials'));
+});
+
+test('a deployment without a credential store still serves the gallery', async () => {
+	// The seam is guarded: `credentials` is declared, but a composition that never
+	// mounts a provider leaves the property absent at read time.
+	const root = path.join(import.meta.dirname, '.tmp', `host-nocreds-${newId()}`);
+	fs.mkdirSync(root, { recursive: true });
+	process.env.DSH_IMAGE_STUDIO_HOME = root;
+
+	let registered;
+	const ctx = { effect: (fn) => fn() };
+	Object.defineProperty(ctx, 'webServer', { get: () => ({ register: (options) => { registered = options; return () => {}; } }) });
+	Object.defineProperty(ctx, 'credentials', { get: () => { throw new Error('cannot get property "credentials" without inject'); } });
+	apply(ctx, {});
+
+	const response = await call(registered.handler, makeRequest({ url: '/api/image-studio/state' }));
+	const body = parse(response);
+	assert.equal(response.statusCode, 200, body.error);
+	assert.equal(body.credentials.fal.configured, false);
+	assert.equal(body.credentials.fal.writable, false);
+});
 
 test('a request from another machine is refused', async () => {
 	const { handler } = mount();

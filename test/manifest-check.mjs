@@ -75,6 +75,36 @@ test('the browser half never asks for a secret and never names a provider URL', 
 	assert.equal(/key_id:key_secret/.test(clientSource), true, 'the key placeholder belongs to the input field only');
 });
 
+test('the card shows a proper name and description in both languages', () => {
+	// The Plugins page takes a bundle's display title and description from the
+	// exported locale `meta`, falling back to package.json — and package.json has
+	// no title at all, so without these files the card shows the bare package
+	// name. This is the regression that made the card look unfinished.
+	const expected = [['en', /by Alex Naletko$/], ['ru', /от Алекса Налетко$/]];
+	for (const [lang, title] of expected) {
+		const file = path.join(packageRoot, 'locale', `${lang}.json`);
+		assert.equal(fs.existsSync(file), true, `locale/${lang}.json must exist`);
+		const meta = JSON.parse(fs.readFileSync(file, 'utf8')).meta;
+		assert.match(meta.title, title);
+		assert.ok(meta.description.length > 40, `locale/${lang}.json needs a real description`);
+	}
+	assert.equal(manifest.exports['./locale/*.json'], './locale/*.json', 'the host reads the locales through the export map');
+});
+
+test('the icon is a self-contained drawing', () => {
+	const icon = fs.readFileSync(path.join(packageRoot, manifest.icon), 'utf8');
+	assert.match(icon, /viewBox="0 0 64 64"/);
+	assert.match(icon, /role="img"/);
+
+	// Every paint server and clip path it references must be defined in the file:
+	// an unresolved url(#…) renders as no fill at all, which is a plugin icon that
+	// silently disappears.
+	const ids = new Set([...icon.matchAll(/\sid="([^"]+)"/g)].map((match) => match[1]));
+	const refs = [...icon.matchAll(/url\(#([^)]+)\)/g)].map((match) => match[1]);
+	assert.ok(refs.length > 0, 'the icon is built from gradients and clips');
+	for (const ref of refs) assert.ok(ids.has(ref), `icon.svg references the undefined id "${ref}"`);
+});
+
 test('compatibility.json claims only the cores the plugin was built for', () => {
 	const compatibility = JSON.parse(fs.readFileSync(path.join(packageRoot, 'compatibility.json'), 'utf8'));
 	assert.deepEqual(compatibility.releaseTargets, ['0.2.0-rc.2', '0.2.0-rc.1']);

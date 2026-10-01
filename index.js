@@ -67,7 +67,12 @@ import {
 	writeEntryFile,
 } from './lib/gallery.js';
 
-export const inject = ['webServer'];
+// The plan is deliberately narrow: `webServer` for the HTTP surface, and
+// `credentials` because the fal key is read and written through the harness
+// credential seam. Declaring a service here is what makes reading it legal —
+// Cordis throws `cannot get property "credentials" without inject` otherwise,
+// which is exactly how the live desktop taught this plugin its lesson.
+export const inject = ['webServer', 'credentials'];
 
 /** Default credential reference holding the fal key. */
 const DEFAULT_FAL_KEY_REF = 'FAL_API_KEY';
@@ -141,8 +146,21 @@ export function apply(ctx, config) {
 		req.on('error', reject);
 	});
 
-	/** The credential service, when this deployment mounts one. */
-	const credentials = () => ctx.credentials;
+	/**
+	 * The credential service, when this deployment mounts one.
+	 *
+	 * Reading an undeclared service throws in Cordis, and a deployment without a
+	 * credential store should still get the gallery and the montage, so the read
+	 * is guarded: an absent seam degrades to "no key configured here" instead of
+	 * failing every route.
+	 */
+	const credentials = () => {
+		try {
+			return ctx.credentials;
+		} catch {
+			return undefined;
+		}
+	};
 
 	/**
 	 * Whether ffmpeg is usable, probed once per process: the montage action is
