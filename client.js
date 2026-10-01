@@ -109,6 +109,7 @@ window.__ModuleLoader__.load({
 				clear: 'Удалить ключ',
 				defaultsTitle: 'По умолчанию',
 				outputDir: 'Файлы студии',
+				versionTitle: 'Версия плагина',
 			},
 			en: {
 				panel: 'Images',
@@ -191,6 +192,7 @@ window.__ModuleLoader__.load({
 				clear: 'Remove key',
 				defaultsTitle: 'Defaults',
 				outputDir: 'Studio files',
+				versionTitle: 'Plugin version',
 			},
 		};
 
@@ -664,7 +666,8 @@ window.__ModuleLoader__.load({
 					h('span', { className: `dsh-is-dot ${fal && fal.configured ? 'dsh-is-dot-on' : 'dsh-is-dot-off'}` }),
 					h('span', null, fal && fal.configured
 						? (fal.source === 'env' ? dict.keyFromEnv : dict.keyConfigured)
-						: dict.keyMissing)),
+						: dict.keyMissing),
+					state && state.version ? h('span', { className: 'dsh-is-hint', style: { marginLeft: 'auto' } }, `v${state.version}`) : null),
 
 				h('div', { className: 'dsh-is-settings-row' },
 					h('label', { className: 'dsh-is-label', htmlFor: 'dsh-is-key' }, dict.keyLabel),
@@ -1252,7 +1255,8 @@ window.__ModuleLoader__.load({
 						h('h1', { className: 'dsh-is-title' }, dict.title),
 						h('p', { className: 'dsh-is-subtitle' }, dict.subtitle)),
 					state ? h('span', { className: 'dsh-is-count' },
-						`${state.stats.total} ${dict.itemsCount} · ${state.stats.images} / ${state.stats.videos}`) : null),
+						`${state.stats.total} ${dict.itemsCount} · ${state.stats.images} / ${state.stats.videos}`,
+						state.version ? h('span', { title: dict.versionTitle }, ` · v${state.version}`) : null) : null),
 
 				!keyReady && state
 					? h('div', { className: 'dsh-is-banner dsh-is-banner-error' },

@@ -208,6 +208,8 @@ test('state reports the catalogue, the defaults, and whether a key is configured
 
 	assert.equal(response.statusCode, 200);
 	assert.equal(body.ok, true);
+	assert.equal(body.version, JSON.parse(fs.readFileSync(path.join(import.meta.dirname, '..', 'package.json'), 'utf8')).version,
+		'the page reports the version actually running');
 	assert.equal(body.credentials.fal.configured, false);
 	assert.equal(body.storage.root, root);
 	assert.equal(body.config.falKeyRef, 'FAL_API_KEY');

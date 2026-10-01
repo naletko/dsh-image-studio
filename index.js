@@ -98,6 +98,24 @@ const DEFAULTS = {
 };
 
 /**
+ * The plugin's own version, read once when the row mounts.
+ *
+ * A plugin installed from Git has no registry to ask, and "did my update land?"
+ * is otherwise answered by reading files on disk — so the page shows the version
+ * it is actually running.
+ *
+ * @returns the version string, or `0.0.0` when the manifest cannot be read.
+ */
+function readOwnVersion() {
+	try {
+		const manifest = JSON.parse(fs.readFileSync(new URL('./package.json', import.meta.url), 'utf8'));
+		return typeof manifest.version === 'string' && manifest.version !== '' ? manifest.version : '0.0.0';
+	} catch {
+		return '0.0.0';
+	}
+}
+
+/**
  * Mount the studio.
  *
  * @param ctx - the harness context.
@@ -105,6 +123,7 @@ const DEFAULTS = {
  */
 export function apply(ctx, config) {
 	const root = studioRoot();
+	const version = readOwnVersion();
 	const live = { ...DEFAULTS, ...pickConfig(loadStoredConfig(root)), ...pickConfig(config) };
 
 	/** In-memory job table: the page polls it, nothing else reads it. */
@@ -468,6 +487,7 @@ export function apply(ctx, config) {
 					const index = pruneMissing(root);
 					sendJson(res, 200, {
 						ok: true,
+						version,
 						config: {
 							falKeyRef: live.falKeyRef,
 							defaultModel: live.defaultModel,

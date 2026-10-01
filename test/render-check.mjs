@@ -158,6 +158,7 @@ const videoItem = { ...imageItem, id: 'b'.repeat(24), kind: 'video', mime: 'vide
 
 /** The state payload the host answers with on a configured machine. */
 const loadedState = {
+	version: '9.9.9',
 	config: { falKeyRef: 'FAL_API_KEY', defaultModel: 'fal-ai/flux-2/klein/9b', defaultAspect: '1:1', defaultCount: 1 },
 	catalog,
 	credentials: { fal: { configured: true, source: 'file', writable: true } },
@@ -183,6 +184,7 @@ test('a loaded page shows the pickers, the counters and a card per entry', () =>
 	const text = textOf(tree);
 
 	assert.match(text, /2 работ/);
+	assert.match(text, /v9\.9\.9/, 'the page says which version is running');
 	assert.equal(findAll(tree, 'select').length, 3, 'model, aspect and variants');
 	assert.match(text, /FLUX\.2 Klein 9B/, 'the model picker lists the catalogue');
 	assert.match(text, /Галерея/);
