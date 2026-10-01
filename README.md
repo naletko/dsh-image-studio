@@ -88,6 +88,19 @@ Once stored, the next Generate uses it; no restart is needed.
 The reference name can be changed in the row's configuration (`falKeyRef`), which is useful when a machine keeps its
 keys under a different name.
 
+## Updating
+
+The harness never updates an outside plugin by itself, and there is no version picker: **remove the card on the
+Plugins page and add the plugin again.** For a Git install, pin the commit so the package manager cannot keep serving
+the revision already in the profile's lockfile:
+
+```text
+github:naletko/dsh-image-studio#e228de1
+```
+
+Restart the harness when the page asks for it. The host half only reloads at boot, so a new version needs a restart; a
+browser-half change alone would be picked up by refreshing the page.
+
 ## Where files live
 
 ```text
