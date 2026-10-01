@@ -15,7 +15,7 @@ import test from 'node:test';
 import { Writable } from 'node:stream';
 
 import { apply, isLocalRequest, pickConfig, publicEntry } from '../index.js';
-import { newId } from '../lib/gallery.js';
+import { addEntries, newId, writeEntryFile } from '../lib/gallery.js';
 
 /** A 1×1 PNG, so downloaded media is really an image. */
 const PNG = Buffer.from(
@@ -346,6 +346,54 @@ test('defaults can be changed and survive into the next state read', async () =>
 	})));
 	assert.equal(nonsense.config.defaultAspect, '9:16');
 	assert.equal(nonsense.config.defaultCount, 8);
+});
+
+test('a montage with nothing chosen is refused before anything runs', async () => {
+	const { handler } = mount();
+	const empty = await call(handler, makeRequest({ url: '/api/image-studio/montage', method: 'POST', body: { ids: [] } }));
+	assert.equal(empty.statusCode, 400);
+
+	const hostile = await call(handler, makeRequest({
+		url: '/api/image-studio/montage',
+		method: 'POST',
+		body: { ids: ['../../etc/passwd'] },
+	}));
+	assert.equal(hostile.statusCode, 400, 'an id that is not an id must never reach ffmpeg');
+});
+
+test('a montage of one still either assembles a clip or reports why it could not', async () => {
+	const { handler, root } = mount();
+	const entry = writeEntryFile(root, {
+		id: newId(),
+		bytes: PNG,
+		ext: 'png',
+		meta: { kind: 'image', prompt: 'a still', createdAt: Date.now() },
+	});
+	addEntries(root, [entry]);
+
+	const started = await call(handler, makeRequest({
+		url: '/api/image-studio/montage',
+		method: 'POST',
+		body: { ids: [entry.id], aspect: '9:16', stillSeconds: 2 },
+	}));
+	assert.equal(started.statusCode, 202);
+
+	// ffmpeg is present on a normal machine and refused in a confined sandbox, so
+	// both endings are legitimate; what must never happen is a silent failure.
+	const job = await waitForJob(handler, parse(started).job.id, 60000);
+	const gallery = parse(await call(handler, makeRequest({ url: '/api/image-studio/gallery' }))).items;
+
+	if (job.status === 'done') {
+		assert.equal(gallery.length, 2);
+		const produced = gallery.find((item) => item.id !== entry.id);
+		assert.equal(produced.kind, 'video');
+		assert.equal(produced.model, 'ffmpeg-montage');
+		assert.ok(produced.bytes > 1000, 'an assembled clip has real content');
+	} else {
+		assert.equal(job.status, 'error');
+		assert.match(job.error, /ffmpeg/i);
+		assert.equal(gallery.length, 1, 'a failed montage adds nothing');
+	}
 });
 
 test('unknown routes and unknown jobs answer 404 rather than pretending', async () => {

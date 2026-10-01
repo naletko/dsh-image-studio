@@ -43,6 +43,21 @@ window.__ModuleLoader__.load({
 				resolution: 'Разрешение',
 				tabGallery: 'Галерея',
 				tabTemplates: 'Шаблоны',
+				tabMontage: 'Монтаж',
+				montageHint: 'Соберите ролик: добавьте клипы и кадры по порядку — они станут одним вертикальным видео.',
+				montageTimeline: 'Таймлайн',
+				montageSources: 'Материалы',
+				montageEmpty: 'Таймлайн пуст — добавьте кадр или клип из материалов ниже.',
+				montageUp: 'Выше',
+				montageDown: 'Ниже',
+				montageRemove: 'Убрать',
+				montageStill: 'сек на кадр',
+				montageBuild: 'Собрать ролик',
+				montageWorking: 'Собираю ролик',
+				montageDone: 'Ролик собран',
+				montageNoFfmpeg: 'ffmpeg не найден, поэтому монтаж недоступен',
+				montageNoSources: 'Пока нечего собирать — сначала сгенерируйте кадры или клипы.',
+				montageStep: 'шаг',
 				filterAll: 'Все',
 				filterImages: 'Картинки',
 				filterVideos: 'Видео',
@@ -110,6 +125,21 @@ window.__ModuleLoader__.load({
 				resolution: 'Resolution',
 				tabGallery: 'Gallery',
 				tabTemplates: 'Templates',
+				tabMontage: 'Montage',
+				montageHint: 'Assemble a cut: add clips and stills in order and they become one vertical video.',
+				montageTimeline: 'Timeline',
+				montageSources: 'Sources',
+				montageEmpty: 'The timeline is empty — add a still or a clip from the sources below.',
+				montageUp: 'Up',
+				montageDown: 'Down',
+				montageRemove: 'Remove',
+				montageStill: 'seconds per still',
+				montageBuild: 'Assemble the cut',
+				montageWorking: 'Assembling',
+				montageDone: 'The cut is ready',
+				montageNoFfmpeg: 'ffmpeg was not found, so the montage is unavailable',
+				montageNoSources: 'Nothing to assemble yet — generate some stills or clips first.',
+				montageStep: 'step',
 				filterAll: 'All',
 				filterImages: 'Images',
 				filterVideos: 'Videos',
@@ -917,6 +947,166 @@ window.__ModuleLoader__.load({
 				h('div', { className: 'dsh-is-card-caption', title: item.prompt || item.modelLabel }, item.prompt || item.modelLabel || item.id));
 		}
 
+		/**
+		 * The montage tab: a timeline of chosen entries, assembled into one file by
+		 * ffmpeg on the host. The tab reads the whole gallery itself rather than
+		 * the filtered grid, because the timeline is about material, not about
+		 * what the gallery happens to be filtered to.
+		 */
+		function MontageTab({ catalog, dict, tools, onNotice, onError, onGalleryChanged, onOpen }) {
+			const [sources, setSources] = useState([]);
+			const [segments, setSegments] = useState([]);
+			const [aspect, setAspect] = useState('9:16');
+			const [stillSeconds, setStillSeconds] = useState(2);
+			const [job, setJob] = useState(null);
+
+			const ffmpegOk = !tools || !tools.ffmpeg || tools.ffmpeg.ok === true;
+			const aspects = catalog && Array.isArray(catalog.montageAspects) && catalog.montageAspects.length > 0
+				? catalog.montageAspects
+				: ['9:16', '4:5', '1:1', '16:9'];
+
+			const loadSources = useCallback(async () => {
+				try {
+					const body = await api('/gallery');
+					setSources(body.items);
+				} catch (failure) {
+					onError(failure.message);
+				}
+			}, [onError]);
+
+			useEffect(() => { void loadSources(); }, [loadSources]);
+
+			useEffect(() => {
+				if (!job || job.status === 'done' || job.status === 'error') return undefined;
+				const timer = setInterval(async () => {
+					try {
+						const body = await api(`/job?id=${encodeURIComponent(job.id)}`);
+						setJob(body.job);
+						if (body.job.status === 'done') {
+							onNotice(dict.montageDone);
+							await loadSources();
+							onGalleryChanged();
+						}
+						if (body.job.status === 'error') onError(body.job.error || dict.errorGeneric);
+					} catch (failure) {
+						onError(failure.message);
+						setJob(null);
+					}
+				}, JOB_POLL_MS);
+				return () => clearInterval(timer);
+			}, [job, dict.montageDone, dict.errorGeneric, loadSources, onGalleryChanged, onError, onNotice]);
+
+			const add = (item) => setSegments((current) => [...current, {
+				id: item.id,
+				kind: item.kind,
+				url: item.url,
+				label: item.prompt || item.modelLabel || item.id,
+			}]);
+
+			const move = (index, delta) => setSegments((current) => {
+				const target = index + delta;
+				if (target < 0 || target >= current.length) return current;
+				const next = [...current];
+				const [moved] = next.splice(index, 1);
+				next.splice(target, 0, moved);
+				return next;
+			});
+
+			const drop = (index) => setSegments((current) => current.filter((_, position) => position !== index));
+
+			const busy = job !== null && job.status !== 'done' && job.status !== 'error';
+			const images = segments.filter((segment) => segment.kind === 'image').length;
+
+			const build = async () => {
+				try {
+					const body = await api('/montage', {
+						method: 'POST',
+						body: JSON.stringify({ ids: segments.map((segment) => segment.id), aspect, stillSeconds }),
+					});
+					setJob(body.job);
+				} catch (failure) {
+					onError(failure.message);
+				}
+			};
+
+			if (!ffmpegOk) {
+				return h('div', { className: 'dsh-is-empty' },
+					h(IconFilm, { size: 30 }),
+					h('h3', null, dict.tabMontage),
+					h('p', null, dict.montageNoFfmpeg),
+					tools && tools.ffmpeg && tools.ffmpeg.message ? h('p', null, h('code', null, tools.ffmpeg.message)) : null);
+			}
+
+			return h('div', { className: 'dsh-is-settings' },
+				h('p', { className: 'dsh-is-subtitle', style: { margin: 0 } }, dict.montageHint),
+
+				h('div', { className: 'dsh-is-row' },
+					h('h3', { style: { margin: 0 } }, `${dict.montageTimeline} · ${segments.length}`),
+					h('div', { className: 'dsh-is-spacer' }),
+					h('span', { className: 'dsh-is-field' }, dict.aspect,
+						h('select', { value: aspect, onChange: (event) => setAspect(event.target.value) },
+							aspects.map((value) => h('option', { key: value, value }, value)))),
+					images > 0
+						? h('span', { className: 'dsh-is-field' }, dict.montageStill,
+							h('select', { value: String(stillSeconds), onChange: (event) => setStillSeconds(Number(event.target.value)) },
+								[1, 2, 3, 4, 5, 6, 8, 10].map((value) => h('option', { key: value, value: String(value) }, String(value)))))
+						: null,
+					h('button', {
+						className: 'dsh-is-button dsh-is-button-primary',
+						disabled: busy || segments.length === 0,
+						onClick: () => void build(),
+					}, busy ? `${dict.montageWorking}…` : dict.montageBuild)),
+
+				busy
+					? h('div', { className: 'dsh-is-progress' },
+						h('span', { className: 'dsh-is-spinner' }),
+						h('span', null, `${dict.montageWorking} · ${dict.montageStep} ${job.step ?? 1}/${job.totalSteps ?? '?'}`))
+					: null,
+				job && job.status === 'error'
+					? h('p', { className: 'dsh-is-hint', style: { color: 'var(--dsw-alias-state-error-primary, #e5646a)' } }, job.error)
+					: null,
+				job && job.status === 'done' && job.items && job.items[0]
+					? h('div', { className: 'dsh-is-row' },
+						h('span', { className: 'dsh-is-hint' }, `${dict.montageDone} · ${formatBytes(job.items[0].bytes)}`),
+						h('button', { className: 'dsh-is-button', onClick: () => onOpen(job.items[0]) }, dict.open))
+					: null,
+
+				segments.length === 0
+					? h('p', { className: 'dsh-is-hint' }, dict.montageEmpty)
+					: h('div', { className: 'dsh-is-templates' },
+						segments.map((segment, index) => h('div', { key: `${segment.id}-${index}`, className: 'dsh-is-template' },
+							h('div', { className: 'dsh-is-row' },
+								h('span', { className: 'dsh-is-hint' }, `${index + 1}`),
+								segment.kind === 'image'
+									? h('img', { src: segment.url, alt: '', style: { width: '46px', height: '46px', objectFit: 'cover', borderRadius: '6px' } })
+									: h('video', { src: segment.url, muted: true, style: { width: '46px', height: '46px', objectFit: 'cover', borderRadius: '6px' } }),
+								h('span', { className: 'dsh-is-hint', style: { flex: '1 1 auto', minWidth: 0 } },
+									`${segment.kind === 'video' ? '🎬 ' : ''}${segment.label.slice(0, 60)}`)),
+							h('div', { className: 'dsh-is-template-actions' },
+								h('button', { className: 'dsh-is-button', disabled: index === 0, onClick: () => move(index, -1) }, dict.montageUp),
+								h('button', { className: 'dsh-is-button', disabled: index === segments.length - 1, onClick: () => move(index, 1) }, dict.montageDown),
+								h('button', { className: 'dsh-is-button dsh-is-button-danger', onClick: () => drop(index) }, dict.montageRemove))))),
+
+				h('div', { className: 'dsh-is-section' },
+					h('h3', { style: { margin: 0 } }, dict.montageSources),
+					sources.length === 0
+						? h('p', { className: 'dsh-is-hint' }, dict.montageNoSources)
+						: h('div', { className: 'dsh-is-grid' },
+							sources.map((item) => h('div', {
+								key: item.id,
+								className: 'dsh-is-card',
+								role: 'button',
+								tabIndex: 0,
+								onClick: () => add(item),
+								onKeyDown: (event) => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); add(item); } },
+							},
+								h('div', { className: 'dsh-is-thumb' },
+									item.kind === 'video'
+										? h('video', { src: item.url, muted: true, preload: 'metadata' })
+										: h('img', { src: item.url, alt: '', loading: 'lazy' })),
+								h('div', { className: 'dsh-is-card-caption' }, item.kind === 'video' ? `🎬 ${item.modelLabel}` : item.modelLabel))))));
+		}
+
 		/** The Images page: prompt bar, templates, gallery, and the lightbox. */
 		function ImagesPanel() {
 			const dict = strings();
@@ -1126,7 +1316,8 @@ window.__ModuleLoader__.load({
 
 				h('div', { className: 'dsh-is-tabs', role: 'tablist' },
 					h('button', { className: 'dsh-is-tab', role: 'tab', 'aria-selected': tab === 'gallery', onClick: () => setTab('gallery') }, dict.tabGallery),
-					h('button', { className: 'dsh-is-tab', role: 'tab', 'aria-selected': tab === 'templates', onClick: () => setTab('templates') }, dict.tabTemplates)),
+					h('button', { className: 'dsh-is-tab', role: 'tab', 'aria-selected': tab === 'templates', onClick: () => setTab('templates') }, dict.tabTemplates),
+					h('button', { className: 'dsh-is-tab', role: 'tab', 'aria-selected': tab === 'montage', onClick: () => setTab('montage') }, dict.tabMontage)),
 
 				tab === 'gallery'
 					? h('div', { className: 'dsh-is-chips' },
@@ -1148,7 +1339,17 @@ window.__ModuleLoader__.load({
 					: null,
 
 				h('div', { className: 'dsh-is-scroll' },
-					tab === 'templates' && catalog
+					tab === 'montage' && catalog
+						? h(MontageTab, {
+							catalog,
+							dict,
+							tools: state ? state.tools : undefined,
+							onNotice: setNotice,
+							onError: setError,
+							onGalleryChanged: () => { void refreshGallery(); void refreshState(); },
+							onOpen: setPreview,
+						})
+						: tab === 'templates' && catalog
 						? h('div', null,
 							h('p', { className: 'dsh-is-subtitle', style: { marginBottom: '14px' } }, dict.templatesHint),
 							h('div', { className: 'dsh-is-templates' },
@@ -1200,7 +1401,7 @@ window.__ModuleLoader__.load({
 			// Surfaces for the test suite only: the harness ignores unknown keys on
 			// a client module, and rendering these components outside a browser is
 			// the only way to prove the page does not throw on real data.
-			__test: { ImagesPanel, StudioSettings, Lightbox, GalleryCard, STRINGS },
+			__test: { ImagesPanel, MontageTab, StudioSettings, Lightbox, GalleryCard, STRINGS },
 
 			apply(ctx) {
 				// The global page and the sidebar entry that selects it share one id.

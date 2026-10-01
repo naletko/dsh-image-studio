@@ -31,6 +31,9 @@ Images
 - **A lightbox that is actually useful.** Judge the picture at full size, download the original, copy the prompt, mark it
   a favourite, or press **Animate in Kling** to turn that exact still into a shot — Kling v3 Pro image-to-video, with a
   motion prompt and a duration you choose.
+- **A montage tab.** Pick clips and stills into a timeline, choose 9:16 / 4:5 / 1:1 / 16:9, and the host assembles
+  them into one h264 file with ffmpeg — every segment normalized to the same size, frame rate, and pixel format first,
+  then joined without re-encoding. Stills become clips by looping them for the hold time you choose.
 - **Templates.** Eight starter prompts (product hero, lifestyle, UGC selfie, flat lay, before/after, seasonal,
   character sheet, food close-up) in Russian and English. A template only fills the prompt box; nothing is spent until
   you press Generate.
@@ -110,6 +113,7 @@ Row configuration from the profile patch (`~/.dsh/profiles/<profile>/cordis.patc
 | `defaultCount` | `1` | Variants preselected on the page. |
 | `imageTimeoutMs` | `240000` | Budget for one text-to-image job. |
 | `videoTimeoutMs` | `900000` | Budget for one video job; Kling renders take minutes. |
+| `ffmpegPath` | empty | ffmpeg executable for the montage; empty means `ffmpeg` from `PATH`. |
 
 ## HTTP surface
 
@@ -123,7 +127,7 @@ provider, a key, or a file path.
 | `GET /file?id=` | Media bytes for one entry |
 | `POST /credentials` | Store or clear the fal key (write-only) |
 | `POST /config` | Non-secret defaults |
-| `POST /generate`, `POST /video` | Queue a job, answer `202` with the job |
+| `POST /generate`, `POST /video`, `POST /montage` | Queue a job, answer `202` with the job |
 | `GET /job?id=` | Job status, queue position, produced entries |
 | `POST /favorite`, `POST /delete` | Housekeeping |
 
@@ -148,6 +152,7 @@ npm run check                  # syntax, every file
 node test/catalog-check.mjs    # request shaping for each model family
 node test/fal-check.mjs        # the fal queue client against a scripted queue
 node test/gallery-check.mjs    # index, path confinement, pruning
+node test/montage-check.mjs    # ffmpeg command planning, plus a real assembly when ffmpeg can run
 node test/host-check.mjs       # the HTTP surface end to end, fake credentials and a fake queue
 node test/metadata-check.mjs   # the browser half's module and slot registrations
 node test/render-check.mjs     # every component rendered with real data, effects inert
@@ -165,6 +170,8 @@ works.
 - **Jobs live in memory.** A generation survives page reloads but not a harness restart; the media already written is
   kept either way.
 - **The gallery is per machine.** It is a folder, not a sync service.
+- **The montage is a cut, not an edit.** Segments join in order at the same size and frame rate; there are no
+  crossfades, no music track, no titles yet. It needs `ffmpeg` on the machine, and the tab says so when it is missing.
 - **Video is not visible to the model.** The harness content vocabulary has no video block, so the model learns a file
   path; images are returned to the conversation as attachments by the plugins that generate them, not by this page.
 

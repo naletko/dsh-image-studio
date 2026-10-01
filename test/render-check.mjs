@@ -285,3 +285,41 @@ test('the settings card summarises itself and renders its fields', () => {
 	assert.match(keyField.props.placeholder, /key_id:key_secret/);
 	assert.equal(findAll(tree, 'select').length, 3, 'model, aspect and variant defaults');
 });
+
+test('the montage tab starts empty, with its build action held back', () => {
+	const { components, render, textOf, findAll, react } = loadHarness();
+	const tree = render(react.createElement(components.MontageTab, {
+		catalog,
+		dict: components.STRINGS.ru,
+		tools: { ffmpeg: { ok: true, version: 'ffmpeg version 8.1.1' } },
+		onNotice: () => {},
+		onError: () => {},
+		onGalleryChanged: () => {},
+		onOpen: () => {},
+	}));
+	const text = textOf(tree);
+
+	assert.match(text, /Таймлайн · 0/);
+	assert.match(text, /Таймлайн пуст/);
+	assert.match(text, /Материалы/);
+
+	const build = findAll(tree, 'button').find((node) => String(node.children.join('')).includes('Собрать ролик'));
+	assert.equal(build.props.disabled, true, 'nothing to assemble yet');
+	assert.equal(findAll(tree, 'select').length, 1, 'only the aspect picker before any still is added');
+});
+
+test('the montage tab says so when ffmpeg is missing instead of failing at build time', () => {
+	const { components, render, textOf, findAll, react } = loadHarness();
+	const tree = render(react.createElement(components.MontageTab, {
+		catalog,
+		dict: components.STRINGS.ru,
+		tools: { ffmpeg: { ok: false, message: 'spawn ffmpeg ENOENT' } },
+		onNotice: () => {},
+		onError: () => {},
+		onGalleryChanged: () => {},
+		onOpen: () => {},
+	}));
+	assert.match(textOf(tree), /ffmpeg не найден/);
+	assert.match(textOf(tree), /ENOENT/);
+	assert.equal(findAll(tree, 'button').length, 0, 'no build action without ffmpeg');
+});

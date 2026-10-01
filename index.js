@@ -44,6 +44,16 @@ import {
 } from './lib/catalog.js';
 import { FalError, falKeyProblem, falWait, fetchBytes } from './lib/fal.js';
 import {
+	MONTAGE_ASPECTS,
+	cleanup as cleanupMontage,
+	newMontageId,
+	planMontage,
+	probeFfmpeg,
+	resolveFfmpeg,
+	runMontage,
+	workDirectory as montageWorkDirectory,
+} from './lib/montage.js';
+import {
 	addEntries,
 	entryPath,
 	extensionForMime,
@@ -79,6 +89,7 @@ const DEFAULTS = {
 	defaultCount: 1,
 	imageTimeoutMs: 240000,
 	videoTimeoutMs: 900000,
+	ffmpegPath: '',
 };
 
 /**
@@ -132,6 +143,19 @@ export function apply(ctx, config) {
 
 	/** The credential service, when this deployment mounts one. */
 	const credentials = () => ctx.credentials;
+
+	/**
+	 * Whether ffmpeg is usable, probed once per process: the montage action is
+	 * hidden rather than offered when the machine cannot run it.
+	 */
+	let ffmpegProbe;
+	const ffmpegInfo = async () => {
+		if (ffmpegProbe === undefined) {
+			ffmpegProbe = probeFfmpeg({ executable: resolveFfmpeg({ override: live.ffmpegPath }) })
+				.catch((error) => ({ ok: false, version: undefined, message: error instanceof Error ? error.message : String(error) }));
+		}
+		return ffmpegProbe;
+	};
 
 	/**
 	 * Resolve the fal key: the credential store first, the launch environment
@@ -341,6 +365,71 @@ export function apply(ctx, config) {
 		}
 	};
 
+	/**
+	 * Run one montage: normalize every chosen entry into a uniform clip, join
+	 * them, and store the result in the gallery like any other video.
+	 */
+	const runMontageJob = async (job) => {
+		const workDir = montageWorkDirectory(root, job.id);
+		try {
+			const executable = resolveFfmpeg({ override: live.ffmpegPath });
+			const probe = await ffmpegInfo();
+			if (probe.ok !== true) {
+				throw new Error(`ffmpeg is not available on this machine${probe.message ? `: ${probe.message}` : ''}`);
+			}
+
+			const index = readIndex(root);
+			const chosen = job.request.ids
+				.map((id) => index.items.find((item) => item.id === id))
+				.filter((entry) => entry !== undefined);
+			if (chosen.length === 0) throw new Error('Pick at least one clip or still to assemble');
+
+			fs.mkdirSync(workDir, { recursive: true });
+			const plan = planMontage({
+				segments: chosen.map((entry) => ({
+					file: entryPath(root, entry),
+					kind: entry.kind === 'image' ? 'image' : 'video',
+					duration: entry.kind === 'image' ? job.request.stillSeconds : undefined,
+				})),
+				aspect: job.request.aspect,
+				output: path.join(workDir, `montage-${job.id}.mp4`),
+				workDir,
+			});
+
+			job.status = 'running';
+			job.totalSteps = plan.steps.length;
+			const result = await runMontage({
+				plan,
+				executable,
+				onProgress: (progress) => {
+					job.step = progress.step;
+					job.totalSteps = progress.total;
+					job.stepLabel = progress.label;
+				},
+			});
+
+			const entry = storeMedia({
+				createdAt: Date.now(),
+				index: 0,
+				kind: 'video',
+				prompt: job.request.ids.length > 0 ? (chosen[0].prompt ?? '') : '',
+				model: 'ffmpeg-montage',
+				modelLabel: 'Montage',
+				aspect: job.request.aspect,
+				sourceImageId: chosen[0].id,
+				segmentIds: chosen.map((item) => item.id),
+			}, fs.readFileSync(result.output), 'video/mp4', 'mp4');
+			addEntries(root, [entry]);
+			job.items = [entry];
+			job.status = 'done';
+		} catch (error) {
+			job.status = 'error';
+			job.error = describeError(error);
+		} finally {
+			cleanupMontage(workDir);
+		}
+	};
+
 	ctx.effect(() => ctx.webServer.register({
 		kind: 'prefix',
 		path: '/api/image-studio',
@@ -373,11 +462,13 @@ export function apply(ctx, config) {
 							aspects: ASPECTS,
 							durations: VIDEO_DURATIONS,
 							templates: TEMPLATES,
+							montageAspects: Object.keys(MONTAGE_ASPECTS),
 							defaultImageModel: DEFAULT_IMAGE_MODEL,
 							defaultVideoModel: DEFAULT_VIDEO_MODEL,
 						},
 						credentials: { fal: await describeKey() },
 						storage: { root },
+						tools: { ffmpeg: await ffmpegInfo() },
 						stats: summarize(index.items),
 					});
 					return;
@@ -519,6 +610,39 @@ export function apply(ctx, config) {
 					return;
 				}
 
+				if (route === '/montage' && method === 'POST') {
+					const body = await readBody(req);
+					const ids = Array.isArray(body.ids)
+						? body.ids.filter((id) => typeof id === 'string' && isSafeId(id))
+						: [];
+					if (ids.length === 0) {
+						sendJson(res, 400, { ok: false, error: 'Pick at least one clip or still to assemble' });
+						return;
+					}
+					if (ids.length > 40) {
+						sendJson(res, 400, { ok: false, error: 'A montage takes at most 40 segments' });
+						return;
+					}
+					const aspect = typeof body.aspect === 'string' && MONTAGE_ASPECTS[body.aspect] !== undefined
+						? body.aspect
+						: '9:16';
+					const job = createJob({
+						id: newJobId(),
+						kind: 'montage',
+						status: 'queued',
+						createdAt: Date.now(),
+						request: {
+							ids,
+							aspect,
+							stillSeconds: Number.isFinite(body.stillSeconds) ? body.stillSeconds : undefined,
+						},
+						items: [],
+					});
+					void runMontageJob(job);
+					sendJson(res, 202, { ok: true, job: publicJob(job) });
+					return;
+				}
+
 				if (route === '/job' && method === 'GET') {
 					const job = jobs.get(url.searchParams.get('id') ?? '');
 					if (job === undefined) {
@@ -611,6 +735,9 @@ function publicJob(job) {
 		status: job.status,
 		providerStatus: job.providerStatus,
 		queuePosition: job.queuePosition,
+		step: job.step,
+		totalSteps: job.totalSteps,
+		stepLabel: job.stepLabel,
 		createdAt: job.createdAt,
 		error: job.error,
 		items: (job.items ?? []).map(publicEntry),
@@ -644,6 +771,7 @@ export function pickConfig(source) {
 	if (source.defaultCount !== undefined) out.defaultCount = clampCount(source.defaultCount, DEFAULTS.defaultCount);
 	if (Number.isFinite(source.imageTimeoutMs)) out.imageTimeoutMs = source.imageTimeoutMs;
 	if (Number.isFinite(source.videoTimeoutMs)) out.videoTimeoutMs = source.videoTimeoutMs;
+	if (typeof source.ffmpegPath === 'string') out.ffmpegPath = source.ffmpegPath;
 	return out;
 }
 
