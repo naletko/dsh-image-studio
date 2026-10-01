@@ -75,18 +75,20 @@ test('the browser half never asks for a secret and never names a provider URL', 
 	assert.equal(/key_id:key_secret/.test(clientSource), true, 'the key placeholder belongs to the input field only');
 });
 
-test('the card shows a proper name and description in both languages', () => {
+test('the card shows a short name and credits the author in the description', () => {
 	// The Plugins page takes a bundle's display title and description from the
 	// exported locale `meta`, falling back to package.json — and package.json has
 	// no title at all, so without these files the card shows the bare package
-	// name. This is the regression that made the card look unfinished.
-	const expected = [['en', /by Alex Naletko$/], ['ru', /от Алекса Налетко$/]];
-	for (const [lang, title] of expected) {
+	// name. The title stays the same in every language (it is the plugin's name),
+	// and the author lives in the description.
+	const credits = [['en', /Alex Naletko/], ['ru', /Алекс Налетко/]];
+	for (const [lang, credit] of credits) {
 		const file = path.join(packageRoot, 'locale', `${lang}.json`);
 		assert.equal(fs.existsSync(file), true, `locale/${lang}.json must exist`);
 		const meta = JSON.parse(fs.readFileSync(file, 'utf8')).meta;
-		assert.match(meta.title, title);
-		assert.ok(meta.description.length > 40, `locale/${lang}.json needs a real description`);
+		assert.equal(meta.title, 'Image Studio');
+		assert.match(meta.description, credit);
+		assert.ok(meta.description.length > 60, `locale/${lang}.json needs a real description`);
 	}
 	assert.equal(manifest.exports['./locale/*.json'], './locale/*.json', 'the host reads the locales through the export map');
 });
