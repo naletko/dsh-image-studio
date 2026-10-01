@@ -23,6 +23,29 @@ const PNG = Buffer.from(
 	'base64',
 );
 
+/** The manifest this process is running, for version assertions. */
+const manifest = JSON.parse(fs.readFileSync(path.join(import.meta.dirname, '..', 'package.json'), 'utf8'));
+
+/**
+ * Answer the two GitHub endpoints the updater reads.
+ *
+ * @param options.version - the version the branch claims.
+ * @param options.commits - the commits endpoint payload.
+ * @returns a restore function.
+ */
+function stubGithub({ version = '9.9.9', commits = [{ sha: 'c'.repeat(40), commit: { message: 'make it better' } }] } = {}) {
+	const realFetch = globalThis.fetch;
+	globalThis.fetch = async (url) => {
+		const target = String(url);
+		if (target.includes('raw.githubusercontent.com')) return new Response(JSON.stringify({ version }), { status: 200 });
+		if (target.includes('api.github.com')) return new Response(JSON.stringify(commits), { status: 200 });
+		throw new Error(`unexpected fetch ${target}`);
+	};
+	return () => {
+		globalThis.fetch = realFetch;
+	};
+}
+
 /** An in-memory credential store shaped like the harness seam. */
 function fakeCredentials(initial = {}) {
 	const store = new Map(Object.entries(initial));
@@ -106,9 +129,10 @@ async function call(handler, request) {
  *
  * @param options.credentials - an in-memory credential store.
  * @param options.config - the row configuration.
+ * @param options.pluginManager - a stand-in for the harness plugin manager.
  * @returns `{ handler, root, credentials }`.
  */
-function mount({ credentials = fakeCredentials(), config = {} } = {}) {
+function mount({ credentials = fakeCredentials(), config = {}, pluginManager } = {}) {
 	const root = path.join(import.meta.dirname, '.tmp', `host-${newId()}`);
 	fs.mkdirSync(root, { recursive: true });
 	process.env.DSH_IMAGE_STUDIO_HOME = root;
@@ -118,8 +142,27 @@ function mount({ credentials = fakeCredentials(), config = {} } = {}) {
 		webServer: { register: (options) => { registered = options; return () => {}; } },
 		credentials,
 	};
+	if (pluginManager !== undefined) services.pluginManager = pluginManager;
 
-	const ctx = { effect: (fn) => fn() };
+	const ctx = {
+		effect: (fn) => fn(),
+		// Cordis' `inject(deps, callback)` runs the callback only once every named
+		// service exists, which is how the plugin finds the plugin manager without
+		// requiring it.
+		inject: (deps, callback) => {
+			const scope = {};
+			let ready = true;
+			for (const dep of deps) {
+				if (!(dep in services)) {
+					ready = false;
+					continue;
+				}
+				Object.defineProperty(scope, dep, { get: () => services[dep] });
+			}
+			if (ready) callback(scope);
+			return () => {};
+		},
+	};
 	for (const name of Object.keys(services)) {
 		Object.defineProperty(ctx, name, {
 			get() {
@@ -166,7 +209,7 @@ test('a deployment without a credential store still serves the gallery', async (
 	process.env.DSH_IMAGE_STUDIO_HOME = root;
 
 	let registered;
-	const ctx = { effect: (fn) => fn() };
+	const ctx = { effect: (fn) => fn(), inject: () => () => {} };
 	Object.defineProperty(ctx, 'webServer', { get: () => ({ register: (options) => { registered = options; return () => {}; } }) });
 	Object.defineProperty(ctx, 'credentials', { get: () => { throw new Error('cannot get property "credentials" without inject'); } });
 	apply(ctx, {});
@@ -437,6 +480,97 @@ test('a montage of one still either assembles a clip or reports why it could not
 		assert.equal(job.status, 'error');
 		assert.match(job.error, /ffmpeg/i);
 		assert.equal(gallery.length, 1, 'a failed montage adds nothing');
+	}
+});
+
+test('the update check compares the branch with the running version', async () => {
+	const { handler } = mount();
+	const restore = stubGithub();
+	try {
+		const body = parse(await call(handler, makeRequest({ url: '/api/image-studio/update' })));
+		assert.equal(body.ok, true);
+		assert.equal(body.current, manifest.version);
+		assert.equal(body.latest, '9.9.9');
+		assert.equal(body.updateAvailable, true);
+		assert.equal(body.sha, 'ccccccc');
+		assert.equal(body.notes[0].message, 'make it better');
+		assert.equal(body.spec, 'github:naletko/dsh-image-studio#ccccccc');
+		assert.equal(body.manager, false, 'no plugin manager in this composition');
+	} finally {
+		restore();
+	}
+});
+
+test('a failed check is reported instead of pretending there is nothing new', async () => {
+	const { handler } = mount();
+	const realFetch = globalThis.fetch;
+	globalThis.fetch = async () => new Response('nope', { status: 503 });
+	try {
+		const response = await call(handler, makeRequest({ url: '/api/image-studio/update' }));
+		assert.equal(response.statusCode, 500);
+		assert.match(parse(response).error, /Cannot reach/);
+	} finally {
+		globalThis.fetch = realFetch;
+	}
+});
+
+test('applying an update hands the pinned revision to the plugin manager', async () => {
+	const calls = [];
+	const pluginManager = {
+		installBundle: (spec, options) => {
+			calls.push({ spec, options });
+			return Promise.resolve({ stage: 'install', status: 'ok' });
+		},
+	};
+	const { handler } = mount({ pluginManager });
+	const restore = stubGithub();
+	try {
+		const response = await call(handler, makeRequest({ url: '/api/image-studio/update/apply', method: 'POST' }));
+		assert.equal(response.statusCode, 202);
+		const body = parse(response);
+		assert.equal(body.started, true);
+		assert.equal(body.spec, 'github:naletko/dsh-image-studio#ccccccc');
+
+		// The install runs detached so a reload cannot cut its response short.
+		await new Promise((resolve) => setTimeout(resolve, 30));
+		const after = parse(await call(handler, makeRequest({ url: '/api/image-studio/update' })));
+		assert.equal(after.progress.status, 'done');
+		assert.deepEqual(after.progress.outcome, { stage: 'install', status: 'ok' });
+
+		assert.equal(calls.length, 1);
+		assert.equal(calls[0].spec, 'github:naletko/dsh-image-studio#ccccccc');
+		assert.match(calls[0].options.requestId, /^image-studio-update-/);
+	} finally {
+		restore();
+	}
+});
+
+test('a failed install is remembered with its reason', async () => {
+	const pluginManager = { installBundle: () => Promise.reject(new Error('pnpm said no')) };
+	const { handler } = mount({ pluginManager });
+	const restore = stubGithub();
+	try {
+		await call(handler, makeRequest({ url: '/api/image-studio/update/apply', method: 'POST' }));
+		await new Promise((resolve) => setTimeout(resolve, 30));
+		const after = parse(await call(handler, makeRequest({ url: '/api/image-studio/update' })));
+		assert.equal(after.progress.status, 'error');
+		assert.match(after.progress.error, /pnpm said no/);
+	} finally {
+		restore();
+	}
+});
+
+test('applying an update without a plugin manager explains the manual route', async () => {
+	const { handler } = mount();
+	const restore = stubGithub();
+	try {
+		const response = await call(handler, makeRequest({ url: '/api/image-studio/update/apply', method: 'POST' }));
+		assert.equal(response.statusCode, 409);
+		const body = parse(response);
+		assert.match(body.error, /plugin manager/i);
+		assert.equal(body.spec, 'github:naletko/dsh-image-studio#ccccccc');
+	} finally {
+		restore();
 	}
 });
 

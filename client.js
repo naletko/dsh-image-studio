@@ -110,6 +110,21 @@ window.__ModuleLoader__.load({
 				defaultsTitle: 'По умолчанию',
 				outputDir: 'Файлы студии',
 				versionTitle: 'Версия плагина',
+				updatesTitle: 'Обновления',
+				updatesCurrent: 'Установлено',
+				updatesLatest: 'На GitHub',
+				updatesCheck: 'Проверить',
+				updatesApply: 'Обновить',
+				updatesAvailable: 'Доступно обновление',
+				updatesRunning: 'Устанавливаю…',
+				updatesDone: 'Обновление скачано',
+				updatesDoneHint: 'Обновите страницу; если версия вверху не изменилась — перезапустите приложение.',
+				updatesFailed: 'Не удалось обновить',
+				updatesUpToDate: 'Установлена последняя версия',
+				updatesManual: 'В этой сборке нет менеджера плагинов — обновите через «Плагины → Добавить плагин»:',
+				updatesDisabled: 'Проверка обновлений выключена в настройках строки',
+				updatesNotes: 'Что нового',
+				updatesReload: 'Обновить страницу',
 			},
 			en: {
 				panel: 'Images',
@@ -193,6 +208,21 @@ window.__ModuleLoader__.load({
 				defaultsTitle: 'Defaults',
 				outputDir: 'Studio files',
 				versionTitle: 'Plugin version',
+				updatesTitle: 'Updates',
+				updatesCurrent: 'Installed',
+				updatesLatest: 'On GitHub',
+				updatesCheck: 'Check',
+				updatesApply: 'Update',
+				updatesAvailable: 'An update is available',
+				updatesRunning: 'Installing…',
+				updatesDone: 'The update has been downloaded',
+				updatesDoneHint: 'Reload the page; if the version above has not changed, restart the application.',
+				updatesFailed: 'The update failed',
+				updatesUpToDate: 'The latest version is installed',
+				updatesManual: 'This deployment has no plugin manager — update from Plugins → Add plugin:',
+				updatesDisabled: 'Update checking is switched off in the row configuration',
+				updatesNotes: "What's new",
+				updatesReload: 'Reload the page',
 			},
 		};
 
@@ -232,6 +262,63 @@ window.__ModuleLoader__.load({
 				throw new Error((body && body.error) || `HTTP ${response.status}`);
 			}
 			return body;
+		}
+
+		//#endregion
+
+		//#region updates
+
+		/**
+		 * The update state shared by the page header and the settings card.
+		 *
+		 * The check itself is cheap and cached by the host for five minutes, so
+		 * both callers ask on mount and the second one costs nothing. While an
+		 * install is running the hook polls, because the host hands the work to
+		 * the plugin manager and reports progress on the same route.
+		 *
+		 * @param options.enabled - whether to ask at all.
+		 * @returns `{ info, busy, error, check, apply }`.
+		 */
+		function useUpdate({ enabled = true } = {}) {
+			const [info, setInfo] = useState(null);
+			const [busy, setBusy] = useState(false);
+			const [error, setError] = useState('');
+
+			const load = useCallback(async (force) => {
+				try {
+					const body = await api(`/update${force ? '?force=1' : ''}`);
+					setInfo(body);
+					return body;
+				} catch (failure) {
+					setError(failure.message);
+					return null;
+				}
+			}, []);
+
+			useEffect(() => {
+				if (enabled) void load(false);
+			}, [enabled, load]);
+
+			useEffect(() => {
+				if (!info || !info.progress || info.progress.status !== 'running') return undefined;
+				const timer = setInterval(() => { void load(true); }, 2500);
+				return () => clearInterval(timer);
+			}, [info, load]);
+
+			const apply = useCallback(async () => {
+				setBusy(true);
+				setError('');
+				try {
+					const body = await api('/update/apply', { method: 'POST' });
+					setInfo((current) => (current ? { ...current, progress: { status: 'running', spec: body.spec, at: Date.now() } } : current));
+				} catch (failure) {
+					setError(failure.message);
+				} finally {
+					setBusy(false);
+				}
+			}, []);
+
+			return { info, busy, error, check: () => load(true), apply };
 		}
 
 		//#endregion
@@ -609,6 +696,9 @@ window.__ModuleLoader__.load({
 
 			useEffect(() => { void load(); }, [load]);
 
+			// Declared last so the hook order above stays what the render tests seed.
+			const upd = useUpdate({ enabled: view !== 'summary' });
+
 			if (view === 'summary') return dict.settingsSummary;
 
 			const saveKey = async () => {
@@ -712,8 +802,80 @@ window.__ModuleLoader__.load({
 						h('button', { className: 'dsh-is-button', disabled: busy, onClick: () => void saveDefaults() }, dict.save))
 						: h('p', { className: 'dsh-is-hint' }, '…')),
 
+				h(UpdateSection, { upd, dict }),
+
 				message !== '' ? h('p', { className: 'dsh-is-hint', style: { color: 'var(--dsw-alias-state-success-primary, #3fa96b)' } }, message) : null,
 				error !== '' ? h('p', { className: 'dsh-is-hint', style: { color: 'var(--dsw-alias-state-error-primary, #e5646a)' } }, error) : null);
+		}
+
+		/**
+		 * The updates block: what is installed, what the branch holds, and one
+		 * button that hands the revision to the harness plugin manager.
+		 */
+		function UpdateSection({ upd, dict }) {
+			const info = upd.info;
+			const progress = info ? info.progress : undefined;
+			const running = progress !== undefined && progress.status === 'running';
+
+			return h('div', { className: 'dsh-is-section' },
+				h('h3', null, dict.updatesTitle),
+
+				!info
+					? h('div', { className: 'dsh-is-row' },
+						h('span', { className: 'dsh-is-hint' }, upd.error || '…'),
+						h('button', { className: 'dsh-is-button', onClick: () => void upd.check() }, dict.updatesCheck))
+					: h('div', null,
+						h('div', { className: 'dsh-is-meta' },
+							h('div', null, `${dict.updatesCurrent}: ${info.current}`),
+							h('div', null, `${dict.updatesLatest}: ${info.latest}${info.sha ? ` · ${info.sha}` : ''}`)),
+
+						info.enabled === false
+							? h('p', { className: 'dsh-is-hint' }, dict.updatesDisabled)
+							: null,
+
+						info.notes && info.notes.length > 0
+							? h('div', { className: 'dsh-is-settings-row' },
+								h('span', { className: 'dsh-is-label' }, dict.updatesNotes),
+								h('div', { className: 'dsh-is-prompt-box' },
+									info.notes.map((note) => h('div', { key: note.sha }, `${note.sha} · ${note.message}`))))
+							: null,
+
+						h('div', { className: 'dsh-is-row' },
+							running
+								? h('div', { className: 'dsh-is-progress' },
+									h('span', { className: 'dsh-is-spinner' }),
+									h('span', null, dict.updatesRunning))
+								: null,
+							h('button', { className: 'dsh-is-button', disabled: running, onClick: () => void upd.check() }, dict.updatesCheck),
+							info.updateAvailable || running
+								? h('button', {
+									className: 'dsh-is-button dsh-is-button-primary',
+									disabled: running || upd.busy || info.manager === false,
+									onClick: () => void upd.apply(),
+								}, `${dict.updatesApply} → ${info.latest}`)
+								: null,
+							!info.updateAvailable && !running
+								? h('span', { className: 'dsh-is-hint' }, dict.updatesUpToDate)
+								: null),
+
+						info.manager === false
+							? h('p', { className: 'dsh-is-hint' }, `${dict.updatesManual} ${info.spec}`)
+							: null,
+
+						progress && progress.status === 'done'
+							? h('div', { className: 'dsh-is-row' },
+								h('span', { className: 'dsh-is-hint', style: { color: 'var(--dsw-alias-state-success-primary, #3fa96b)' } }, `${dict.updatesDone}. ${dict.updatesDoneHint}`),
+								h('button', {
+									className: 'dsh-is-button',
+									onClick: () => { if (typeof location !== 'undefined') location.reload(); },
+								}, dict.updatesReload))
+							: null,
+						progress && progress.status === 'error'
+							? h('p', { className: 'dsh-is-hint', style: { color: 'var(--dsw-alias-state-error-primary, #e5646a)' } },
+								`${dict.updatesFailed}: ${progress.error || ''}`)
+							: null),
+
+				upd.error && info ? h('p', { className: 'dsh-is-hint', style: { color: 'var(--dsw-alias-state-error-primary, #e5646a)' } }, upd.error) : null);
 		}
 
 		//#endregion
@@ -1186,6 +1348,9 @@ window.__ModuleLoader__.load({
 				return () => clearTimeout(timer);
 			}, [notice]);
 
+			// Declared last so the hook order above stays what the render tests seed.
+			const upd = useUpdate();
+
 			const catalog = state ? state.catalog : null;
 			const selectedModel = catalog ? catalog.imageModels.find((entry) => entry.id === model) || catalog.imageModels[0] : null;
 			const keyReady = state ? Boolean(state.credentials && state.credentials.fal && state.credentials.fal.configured) : true;
@@ -1254,9 +1419,20 @@ window.__ModuleLoader__.load({
 					h('div', null,
 						h('h1', { className: 'dsh-is-title' }, dict.title),
 						h('p', { className: 'dsh-is-subtitle' }, dict.subtitle)),
-					state ? h('span', { className: 'dsh-is-count' },
-						`${state.stats.total} ${dict.itemsCount} · ${state.stats.images} / ${state.stats.videos}`,
-						state.version ? h('span', { title: dict.versionTitle }, ` · v${state.version}`) : null) : null),
+					h('div', { className: 'dsh-is-row' },
+						upd.info && (upd.info.updateAvailable || (upd.info.progress && upd.info.progress.status === 'running'))
+							? h('button', {
+								className: 'dsh-is-button dsh-is-button-primary',
+								disabled: upd.busy || (upd.info.progress && upd.info.progress.status === 'running') || upd.info.manager === false,
+								title: upd.info.manager === false ? `${dict.updatesManual} ${upd.info.spec}` : dict.updatesAvailable,
+								onClick: () => void upd.apply(),
+							}, upd.info.progress && upd.info.progress.status === 'running'
+								? dict.updatesRunning
+								: `${dict.updatesApply} → ${upd.info.latest}`)
+							: null,
+						state ? h('span', { className: 'dsh-is-count' },
+							`${state.stats.total} ${dict.itemsCount} · ${state.stats.images} / ${state.stats.videos}`,
+							state.version ? h('span', { title: dict.versionTitle }, ` · v${state.version}`) : null) : null)),
 
 				!keyReady && state
 					? h('div', { className: 'dsh-is-banner dsh-is-banner-error' },

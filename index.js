@@ -44,6 +44,11 @@ import {
 } from './lib/catalog.js';
 import { FalError, falKeyProblem, falWait, fetchBytes } from './lib/fal.js';
 import {
+	UPDATE_CHECK_TTL_MS,
+	describeUpdate,
+	updateSpec,
+} from './lib/update.js';
+import {
 	MONTAGE_ASPECTS,
 	cleanup as cleanupMontage,
 	newMontageId,
@@ -95,6 +100,8 @@ const DEFAULTS = {
 	imageTimeoutMs: 240000,
 	videoTimeoutMs: 900000,
 	ffmpegPath: '',
+	updateRepo: 'naletko/dsh-image-studio',
+	updateCheck: true,
 };
 
 /**
@@ -192,6 +199,58 @@ export function apply(ctx, config) {
 				.catch((error) => ({ ok: false, version: undefined, message: error instanceof Error ? error.message : String(error) }));
 		}
 		return ffmpegProbe;
+	};
+
+	/**
+	 * The harness plugin manager, when this deployment mounts one.
+	 *
+	 * The upgrade is handed to it rather than run here: the manager owns pnpm,
+	 * the profile lock, and the rollback of a failed install, and a plugin that
+	 * replaced its own files would be guessing at all three.
+	 */
+	let pluginManager;
+	ctx.inject(['pluginManager'], (scope) => {
+		pluginManager = scope.pluginManager;
+		return () => {
+			pluginManager = undefined;
+		};
+	});
+
+	/** Last check result, kept so a page reopen does not re-ask GitHub. */
+	let updateCache;
+	/** The upgrade this process started, if any. */
+	let lastUpdate;
+
+	/**
+	 * Ask GitHub what the branch holds.
+	 *
+	 * @param options.force - ignore the cache.
+	 * @returns the payload the page renders.
+	 */
+	const checkForUpdate = async ({ force = false } = {}) => {
+		if (!force && updateCache !== undefined && Date.now() - updateCache.at < UPDATE_CHECK_TTL_MS) return updateCache.payload;
+		const repository = live.updateRepo;
+		const manifestResponse = await fetch(`https://raw.githubusercontent.com/${repository}/main/package.json`, {
+			headers: { 'user-agent': `dsh-image-studio/${version}` },
+			signal: AbortSignal.timeout(10000),
+		});
+		if (!manifestResponse.ok) throw new Error(`Cannot reach ${repository} on GitHub (HTTP ${manifestResponse.status})`);
+		const manifest = await manifestResponse.json();
+
+		let commits;
+		try {
+			const commitsResponse = await fetch(`https://api.github.com/repos/${repository}/commits?per_page=6`, {
+				headers: { accept: 'application/vnd.github+json', 'user-agent': `dsh-image-studio/${version}` },
+				signal: AbortSignal.timeout(10000),
+			});
+			if (commitsResponse.ok) commits = await commitsResponse.json();
+		} catch {
+			// The note is a convenience: a rate-limited API still leaves a usable check.
+		}
+
+		const payload = describeUpdate({ repository, current: version, latest: manifest?.version, commits });
+		updateCache = { at: Date.now(), payload };
+		return payload;
 	};
 
 	/**
@@ -584,6 +643,54 @@ export function apply(ctx, config) {
 					return;
 				}
 
+				if (route === '/update' && method === 'GET') {
+					if (live.updateCheck !== true) {
+						sendJson(res, 200, { ok: true, enabled: false, current: version, repository: live.updateRepo });
+						return;
+					}
+					const payload = await checkForUpdate({ force: url.searchParams.get('force') === '1' });
+					sendJson(res, 200, {
+						ok: true,
+						enabled: true,
+						...payload,
+						manager: pluginManager !== undefined,
+						progress: lastUpdate,
+					});
+					return;
+				}
+
+				if (route === '/update/apply' && method === 'POST') {
+					const payload = await checkForUpdate({ force: true });
+					if (typeof payload.sha !== 'string' || payload.sha === '') {
+						sendJson(res, 409, { ok: false, error: 'GitHub did not report a revision to install' });
+						return;
+					}
+					if (pluginManager === undefined || typeof pluginManager.installBundle !== 'function') {
+						sendJson(res, 409, {
+							ok: false,
+							error: 'This deployment has no plugin manager, so update from Plugins → Add plugin',
+							spec: payload.spec,
+						});
+						return;
+					}
+
+					// The spec is built from the configured repository and a validated
+					// hash — never from the request — so a caller cannot ask pnpm for
+					// something else.
+					const spec = updateSpec(live.updateRepo, payload.sha);
+					lastUpdate = { at: Date.now(), spec, status: 'running' };
+					void Promise.resolve()
+						.then(() => pluginManager.installBundle(spec, { requestId: `image-studio-update-${Date.now().toString(36)}` }))
+						.then((outcome) => {
+							lastUpdate = { at: Date.now(), spec, status: 'done', outcome: summarizeOutcome(outcome) };
+						})
+						.catch((error) => {
+							lastUpdate = { at: Date.now(), spec, status: 'error', error: describeError(error) };
+						});
+					sendJson(res, 202, { ok: true, started: true, spec });
+					return;
+				}
+
 				if (route === '/generate' && method === 'POST') {
 					const body = await readBody(req);
 					const prompt = String(body.prompt ?? '').trim();
@@ -810,6 +917,8 @@ export function pickConfig(source) {
 	if (Number.isFinite(source.imageTimeoutMs)) out.imageTimeoutMs = source.imageTimeoutMs;
 	if (Number.isFinite(source.videoTimeoutMs)) out.videoTimeoutMs = source.videoTimeoutMs;
 	if (typeof source.ffmpegPath === 'string') out.ffmpegPath = source.ffmpegPath;
+	if (typeof source.updateRepo === 'string' && /^[\w.-]+\/[\w.-]+$/.test(source.updateRepo)) out.updateRepo = source.updateRepo;
+	if (typeof source.updateCheck === 'boolean') out.updateCheck = source.updateCheck;
 	return out;
 }
 
@@ -849,4 +958,22 @@ function newJobId() {
 function describeError(error) {
 	if (error instanceof FalError) return error.message;
 	return error instanceof Error ? error.message : String(error);
+}
+
+/**
+ * Keep the readable part of a plugin-manager result.
+ *
+ * The manager's own object is large and may hold references the HTTP layer
+ * cannot serialize; the page only needs to know how the attempt ended.
+ *
+ * @param outcome - what `installBundle` resolved with.
+ * @returns a small plain object, or undefined.
+ */
+export function summarizeOutcome(outcome) {
+	if (outcome === null || typeof outcome !== 'object') return undefined;
+	const summary = {};
+	for (const key of ['stage', 'status', 'enabled', 'warnings', 'reason']) {
+		if (outcome[key] !== undefined) summary[key] = outcome[key];
+	}
+	return summary;
 }

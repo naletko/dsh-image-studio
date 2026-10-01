@@ -1,7 +1,7 @@
 # Agent installation guide
 
 Use this guide when someone asks you to install, update, verify, or remove `dsh-image-studio` in a DeepSeek Harness
-profile. Current release: **dsh-image-studio@0.1.2**, qualified against DSH cores **0.2.0-rc.2** and **0.2.0-rc.1**.
+profile. Current release: **dsh-image-studio@0.1.3**, qualified against DSH cores **0.2.0-rc.2** and **0.2.0-rc.1**.
 
 ## Safety
 
@@ -81,11 +81,16 @@ Do not spend the person's fal credits without asking first.
 
 ## Update
 
-There is no automatic update. Uninstall and install again, or install a newer spec:
+The plugin can update itself: **Settings → Plugins → Image Studio** has an **Updates** section that asks GitHub for the
+branch revision, shows what changed, and hands the pinned commit to the harness plugin manager (`ctx.pluginManager`).
+A newer branch also surfaces a button in the page header. Prefer that over reinstalling by hand, and ask the person to
+reload the page afterwards — a host-half change needs an application restart, which the section says too.
+
+Terminal equivalent, when the profile is not owned by the desktop app:
 
 ```sh
 dsh plugin --profile web remove dsh-image-studio
-dsh plugin --profile web add dsh-image-studio@0.2.0
+dsh plugin --profile web add github:naletko/dsh-image-studio
 ```
 
 ## Uninstall

@@ -90,16 +90,25 @@ keys under a different name.
 
 ## Updating
 
-The harness never updates an outside plugin by itself, and there is no version picker: **remove the card on the
-Plugins page and add the plugin again.** For a Git install, pin the commit so the package manager cannot keep serving
-the revision already in the profile's lockfile:
+The plugin updates itself, so nothing has to be removed or reinstalled:
+
+- **Settings → Plugins → Image Studio → Updates** asks GitHub for the branch revision, shows the version installed
+  next to the version on `main`, lists what changed, and hands the pinned commit to the harness plugin manager in one
+  click.
+- A newer branch also puts an **Update** button in the page header, next to the counters.
+- Afterwards reload the page. A browser-half change is live immediately; a host-half change needs an application
+  restart, and the section says so when the running version has not moved.
+
+The check reads the plugin's own repository (`updateRepo`, default `naletko/dsh-image-studio`) and can be switched off
+with `updateCheck: false` in the row configuration. Nothing else is fetched, and the install spec is built by the
+plugin from the configured repository plus a validated commit hash — never from a request.
+
+If the deployment has no plugin manager, the same section prints the manual spec to paste into **Plugins → Add
+plugin**:
 
 ```text
-github:naletko/dsh-image-studio#e228de1
+github:naletko/dsh-image-studio
 ```
-
-Restart the harness when the page asks for it. The host half only reloads at boot, so a new version needs a restart; a
-browser-half change alone would be picked up by refreshing the page.
 
 ## Where files live
 

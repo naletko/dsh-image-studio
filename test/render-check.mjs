@@ -288,6 +288,49 @@ test('the settings card summarises itself and renders its fields', () => {
 	assert.equal(findAll(tree, 'select').length, 3, 'model, aspect and variant defaults');
 });
 
+test('the page offers the update next to its counters when the branch is newer', () => {
+	const { components, render, textOf, findAll, seeds, react } = loadHarness();
+	// Cell 18 is where `useUpdate`'s first state lands after the page's own hooks;
+	// the seeding is positional by design, so a hook added above it fails here.
+	seeds.set(components.ImagesPanel, {
+		0: loadedState,
+		1: [imageItem],
+		18: { enabled: true, current: '0.1.2', latest: '9.9.9', sha: 'ccccccc', updateAvailable: true, manager: true, notes: [] },
+	});
+	const tree = render(react.createElement(components.ImagesPanel, {}));
+	const text = textOf(tree);
+	assert.match(text, /Обновить → 9\.9\.9/);
+	const button = findAll(tree, 'button').find((node) => String(node.children.join('')).includes('9.9.9'));
+	assert.ok(button, 'the header carries the update action');
+	assert.equal(button.props.disabled, false);
+});
+
+test('the settings card shows what is installed and what GitHub holds', () => {
+	const { components, render, textOf, seeds, react } = loadHarness();
+	seeds.set(components.StudioSettings, {
+		0: loadedState,
+		5: { defaultModel: 'fal-ai/flux-2/klein/9b', defaultAspect: '1:1', defaultCount: 1 },
+		// Same positional rule as above: cell 7 is the update hook's first state.
+		7: {
+			enabled: true,
+			current: '0.1.2',
+			latest: '0.1.3',
+			sha: 'abc1234',
+			updateAvailable: true,
+			manager: true,
+			notes: [{ sha: 'abc1234', message: 'add a model browser' }],
+		},
+	});
+	const tree = render(react.createElement(components.StudioSettings, { view: 'page' }));
+	const text = textOf(tree);
+
+	assert.match(text, /Обновления/);
+	assert.match(text, /Установлено: 0\.1\.2/);
+	assert.match(text, /На GitHub: 0\.1\.3 · abc1234/);
+	assert.match(text, /add a model browser/);
+	assert.match(text, /Обновить → 0\.1\.3/);
+});
+
 test('the montage tab starts empty, with its build action held back', () => {
 	const { components, render, textOf, findAll, react } = loadHarness();
 	const tree = render(react.createElement(components.MontageTab, {
