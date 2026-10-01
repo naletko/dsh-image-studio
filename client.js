@@ -16,7 +16,7 @@ window.__ModuleLoader__.load({
 	id: 'dsh-image-studio',
 	factory(require) {
 		const React = require('react');
-		const { createElement: h, useState, useEffect, useRef, useCallback, useMemo } = React;
+		const { createElement: h, useState, useEffect, useRef, useCallback } = React;
 
 		/** The sidebar entry id and the `main` slot key it selects. */
 		const PANEL_ID = 'images';
@@ -1177,7 +1177,6 @@ window.__ModuleLoader__.load({
 					? h(Lightbox, {
 						item: preview,
 						catalog,
-						dict,
 						onClose: () => setPreview(null),
 						onGalleryChanged: () => { void refreshGallery(); void refreshState(); },
 						onNotice: setNotice,
