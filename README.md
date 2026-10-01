@@ -144,12 +144,14 @@ browser half is a plain script the harness loads itself.
 ## Tests
 
 ```sh
-npm run check          # syntax, every file
+npm run check                  # syntax, every file
 node test/catalog-check.mjs    # request shaping for each model family
 node test/fal-check.mjs        # the fal queue client against a scripted queue
 node test/gallery-check.mjs    # index, path confinement, pruning
-node test/host-check.mjs        # the HTTP surface end to end, fake credentials and a fake queue
+node test/host-check.mjs       # the HTTP surface end to end, fake credentials and a fake queue
 node test/metadata-check.mjs   # the browser half's module and slot registrations
+node test/render-check.mjs     # every component rendered with real data, effects inert
+node test/manifest-check.mjs   # the bundle contract the harness reads
 ```
 
 `node --test test/` spawns a child process per file, which some sandboxes refuse; running the files directly always

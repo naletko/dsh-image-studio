@@ -149,6 +149,8 @@ node test/fal-check.mjs        # клиент очереди fal на подст
 node test/gallery-check.mjs    # индекс, изоляция путей, чистка
 node test/host-check.mjs       # HTTP-поверхность целиком: подставные credentials и очередь
 node test/metadata-check.mjs   # модуль и слоты браузерной половины
+node test/render-check.mjs     # рендер всех компонентов на реальных данных
+node test/manifest-check.mjs   # контракт бандла, который читает харнесс
 ```
 
 `node --test test/` запускает по процессу на файл, что не везде разрешено песочницей; прямой запуск файлов работает

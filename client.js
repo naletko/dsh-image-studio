@@ -1196,6 +1196,12 @@ window.__ModuleLoader__.load({
 
 		return {
 			inject: ['slots'],
+
+			// Surfaces for the test suite only: the harness ignores unknown keys on
+			// a client module, and rendering these components outside a browser is
+			// the only way to prove the page does not throw on real data.
+			__test: { ImagesPanel, StudioSettings, Lightbox, GalleryCard, STRINGS },
+
 			apply(ctx) {
 				// The global page and the sidebar entry that selects it share one id.
 				ctx.slots.inject('main', function* registerPanel() {

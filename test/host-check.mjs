@@ -12,6 +12,7 @@ import { EventEmitter } from 'node:events';
 import fs from 'node:fs';
 import path from 'node:path';
 import test from 'node:test';
+import { Writable } from 'node:stream';
 
 import { apply, isLocalRequest, pickConfig, publicEntry } from '../index.js';
 import { newId } from '../lib/gallery.js';
@@ -48,22 +49,51 @@ function makeRequest({ url, method = 'GET', body, address = '127.0.0.1', origin 
 	return req;
 }
 
-/** A response object that records what the handler wrote. */
+/**
+ * A response object that records what the handler wrote. It is a real Writable
+ * so the media route can pipe a file into it.
+ */
 function makeResponse() {
-	return {
-		statusCode: 0,
-		headers: {},
-		body: '',
-		writeHead(code, headers) {
-			this.statusCode = code;
-			Object.assign(this.headers, headers ?? {});
-			return this;
+	const chunks = [];
+	const res = new Writable({
+		write(chunk, _encoding, callback) {
+			chunks.push(Buffer.from(chunk));
+			callback();
 		},
-		end(chunk) {
-			if (chunk !== undefined && chunk !== null) this.body += chunk.toString();
-			return this;
-		},
+	});
+	res.statusCode = 0;
+	res.headers = {};
+	res.writeHead = function writeHead(code, headers) {
+		this.statusCode = code;
+		Object.assign(this.headers, headers ?? {});
+		return this;
 	};
+	res.end = function end(chunk) {
+		if (chunk !== undefined && chunk !== null) chunks.push(Buffer.from(chunk));
+		Writable.prototype.end.call(this);
+		return this;
+	};
+	Object.defineProperty(res, 'raw', { get: () => Buffer.concat(chunks) });
+	Object.defineProperty(res, 'body', { get: () => Buffer.concat(chunks).toString('utf8') });
+	return res;
+}
+
+/** Call the handler and resolve once the response has fully settled. */
+async function call(handler, request) {
+	const response = makeResponse();
+	const settled = new Promise((resolve) => {
+		if (response.writableFinished) {
+			resolve();
+			return;
+		}
+		response.once('finish', resolve);
+		// A guard so a handler that forgets to end its response fails the test
+		// rather than hanging it.
+		setTimeout(resolve, 1000);
+	});
+	await handler(request, response);
+	await settled;
+	return response;
 }
 
 /**
@@ -87,15 +117,6 @@ function mount({ credentials = fakeCredentials(), config = {} } = {}) {
 	apply(ctx, config);
 	assert.ok(registered, 'the plugin must register its HTTP surface');
 	return { handler: registered.handler, root, credentials };
-}
-
-/** Call the handler and resolve with the response once it settles. */
-async function call(handler, request) {
-	const response = makeResponse();
-	await handler(request, response);
-	// A streamed media response ends on a later tick; JSON responses are already done.
-	await new Promise((resolve) => setTimeout(resolve, 5));
-	return response;
 }
 
 /** Parse a JSON response, failing loudly when the body is not JSON. */
@@ -259,6 +280,12 @@ test('a full generation reaches the gallery and its bytes are served back', asyn
 		const gallery = parse(await call(handler, makeRequest({ url: '/api/image-studio/gallery' })));
 		assert.equal(gallery.items.length, 1);
 		assert.equal(gallery.items[0].id, job.items[0].id);
+
+		// The media route streams the stored bytes back with the stored type.
+		const media = await call(handler, makeRequest({ url: job.items[0].url }));
+		assert.equal(media.statusCode, 200);
+		assert.equal(media.headers['Content-Type'], 'image/png');
+		assert.deepEqual(media.raw, PNG);
 
 		const listing = parse(await call(handler, makeRequest({ url: '/api/image-studio/gallery?kind=image' })));
 		assert.equal(listing.items.length, 1);
