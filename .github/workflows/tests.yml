@@ -1,0 +1,36 @@
+name: tests
+
+# The plugin has no build step, so a green run is only syntax plus the suite.
+# Files are run one by one because `node --test` spawns a child per file.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        node: ['22.x', '24.x']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+
+      - name: Syntax
+        run: |
+          node --check index.js
+          node --check client.js
+          node --check lib/catalog.js
+          node --check lib/fal.js
+          node --check lib/gallery.js
+
+      - name: Tests
+        run: |
+          for file in test/*.mjs; do
+            echo "== $file"
+            node "$file"
+          done

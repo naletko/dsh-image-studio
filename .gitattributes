@@ -1,0 +1,6 @@
+# Keep one line ending in the repository so a Windows checkout and a macOS
+# checkout produce the same bytes; the plugin ships plain scripts with no build
+# step, so a stray CRLF is a real diff rather than a normalised one.
+* text=auto eol=lf
+*.png binary
+*.svg text eol=lf
