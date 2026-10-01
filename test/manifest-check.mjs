@@ -9,12 +9,24 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import test from 'node:test';
+import { createRequire } from 'node:module';
 
 const packageRoot = path.join(import.meta.dirname, '..');
 const manifest = JSON.parse(fs.readFileSync(path.join(packageRoot, 'package.json'), 'utf8'));
 const patchPath = path.join(packageRoot, 'cordis.patch.yml');
 const patch = fs.readFileSync(patchPath, 'utf8');
 const clientSource = fs.readFileSync(path.join(packageRoot, 'client.js'), 'utf8');
+
+test('the exports map resolves the way the host resolves it', () => {
+	// The host reads the icon and loads the browser half through the package's own
+	// export map, so a typo there is a plugin that installs and then does nothing.
+	const require = createRequire(path.join(packageRoot, 'package.json'));
+	for (const specifier of ['dsh-image-studio', 'dsh-image-studio/client', 'dsh-image-studio/package.json', 'dsh-image-studio/icon.svg']) {
+		const resolved = require.resolve(specifier);
+		assert.equal(fs.existsSync(resolved), true, `${specifier} must resolve to a real file`);
+		assert.ok(resolved.startsWith(packageRoot), `${specifier} must stay inside the package`);
+	}
+});
 
 test('the manifest points at files that exist', () => {
 	assert.equal(manifest.name, 'dsh-image-studio');
