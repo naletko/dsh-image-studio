@@ -1,0 +1,19 @@
+# dsh-image-studio bundle layer: inserted when the package is a profile bundle.
+#
+# Every key is optional; the plugin's own schema defaults them. Override any of
+# them here or from the profile's own cordis.patch.yml. Note that a patch
+# replaces a row's whole `config` value instead of merging keys, so an override
+# must restate every key it needs.
+#
+# No secret lives here: `falKeyRef` is the *name* of a credential reference
+# (see README "Where the API key is stored"). The key itself is written through
+# the harness credential store, never into configuration.
+- insert:
+    - id: image-studio
+      name: 'dsh-image-studio'
+      config:
+        # Credential reference holding the fal.ai key (key_id:key_secret).
+        falKeyRef: FAL_API_KEY
+        defaultModel: fal-ai/flux-2/klein/9b
+        defaultAspect: '1:1'
+        defaultCount: 1

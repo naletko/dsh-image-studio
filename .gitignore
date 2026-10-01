@@ -1,0 +1,12 @@
+node_modules
+*.log
+.DS_Store
+Thumbs.db
+*.env
+.env
+# Local studio state must never be committed: it can hold prompts and paths.
+gallery.json
+*.config.json
+.artifacts
+# Scratch roots the tests create.
+test/.tmp

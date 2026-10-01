@@ -1,0 +1,87 @@
+{
+  "name": "dsh-image-studio",
+  "version": "0.1.0",
+  "description": "An Images workspace for DeepSeek Harness: one page to generate with fal.ai, browse every result, compare candidates, and animate the winner with Kling image-to-video.",
+  "keywords": [
+    "dsh-plugin",
+    "deepseek-harness",
+    "image-generation",
+    "gallery",
+    "fal",
+    "fal-ai",
+    "kling",
+    "image-to-video",
+    "text-to-image"
+  ],
+  "author": "Alex Naletko",
+  "license": "MIT",
+  "type": "module",
+  "main": "./index.js",
+  "icon": "./icon.svg",
+  "exports": {
+    ".": "./index.js",
+    "./client": "./client.js",
+    "./package.json": "./package.json",
+    "./icon.svg": "./icon.svg",
+    "./cordis.patch.yml": "./cordis.patch.yml"
+  },
+  "files": [
+    "index.js",
+    "client.js",
+    "icon.svg",
+    "cordis.patch.yml",
+    "compatibility.json",
+    "lib/*.js",
+    "README.md",
+    "README.ru.md",
+    "LICENSE"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "immediately": true,
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-layout",
+        "@deepseek-ai/dsh-client-ui-sidebar"
+      ]
+    }
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/naletko/dsh-image-studio.git"
+  },
+  "bugs": {
+    "url": "https://github.com/naletko/dsh-image-studio/issues"
+  },
+  "homepage": "https://github.com/naletko/dsh-image-studio#readme",
+  "engines": {
+    "node": "^22.19.0 || >=24.0.0"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "4.0.1 || 4.0.2 || 4.0.3 || 4.0.4",
+    "@deepseek-ai/dsh-client-ui-layout": "0.2.0-rc.2 || 0.2.0-rc.1 || 0.1.7-rc.2",
+    "@deepseek-ai/dsh-client-ui-sidebar": "0.2.0-rc.2 || 0.2.0-rc.1 || 0.1.7-rc.2",
+    "react": "^18.2.0"
+  },
+  "peerDependenciesMeta": {
+    "@deepseek-ai/cordis": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-client-ui-layout": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-client-ui-sidebar": {
+      "optional": true
+    },
+    "react": {
+      "optional": true
+    }
+  },
+  "scripts": {
+    "test": "node --test test/*.test.mjs",
+    "check": "node --check index.js && node --check client.js && node --check lib/catalog.js && node --check lib/fal.js && node --check lib/gallery.js"
+  }
+}
