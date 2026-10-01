@@ -31,6 +31,7 @@
     "icon.svg",
     "cordis.patch.yml",
     "compatibility.json",
+    "AGENTS.md",
     "lib/*.js",
     "README.md",
     "README.ru.md",
