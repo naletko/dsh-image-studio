@@ -5,6 +5,9 @@
  * bar that spends fal credits on demand, tabs for starter templates, a grid of
  * everything the studio has ever produced, a lightbox for judging and reusing a
  * candidate, and a Kling image-to-video action that turns the winner into a shot.
+ * The same page also stands as a card in the right sidebar, next to Files,
+ * Terminal and Browser, and its header switches the library between the shared
+ * studio and a folder inside one of the host's projects.
  *
  * The module is loaded as a plain script by the harness client module loader
  * (no bundler), so it declares itself through `window.__ModuleLoader__.load`.
@@ -20,6 +23,13 @@ window.__ModuleLoader__.load({
 
 		/** The sidebar entry id and the `main` slot key it selects. */
 		const PANEL_ID = 'images';
+		/**
+		 * The right sidebar's tab type: its registry id (also the key its body
+		 * and title register under, as the sidebar package requires them to
+		 * match) and the kind the guide card opens.
+		 */
+		const MEDIA_TAB_ID = 'dsh-image-studio';
+		const MEDIA_KIND = 'image-studio-media';
 		/** The plugin's HTTP surface. */
 		const API = '/api/image-studio';
 		/** How often a queued job is asked for progress. */
@@ -139,6 +149,24 @@ window.__ModuleLoader__.load({
 				modelAddPlaceholder: 'fal-ai/qwen-image',
 				modelAddButton: 'Добавить',
 				modelRemove: 'Убрать из списка',
+				// The right sidebar card and the media-source switcher.
+				mediaPanel: 'Медиа проекта',
+				mediaPanelHint: 'Галерея, генерация и монтаж проекта в панели справа',
+				libraryTitle: 'Источник медиа',
+				librarySource: 'Источник',
+				libraryStudio: 'Общая студия',
+				librarySubdir: 'Подпапка',
+				librarySubdirHint: 'Папка внутри dsh-media, например shots/2026',
+				libraryApply: 'Применить',
+				librarySaved: 'Источник медиа переключён',
+				librarySubdirKept: 'Подпапка не принята — хост оставил прежнюю',
+				libraryUnsupported: 'Хост не видит реестр воркспейсов — доступна только общая студия',
+				libraryNoProjects: 'Проектов пока нет — доступна только общая студия',
+				libraryCurrent: 'Библиотека',
+				gitignoreAdd: 'Добавить dsh-media в .gitignore',
+				gitignoreBusy: 'Добавляю…',
+				gitignoreAdded: 'dsh-media добавлена в .gitignore',
+				gitignorePresent: 'dsh-media уже в .gitignore',
 			},
 			en: {
 				panel: 'Images',
@@ -251,6 +279,24 @@ window.__ModuleLoader__.load({
 				modelAddPlaceholder: 'fal-ai/qwen-image',
 				modelAddButton: 'Add',
 				modelRemove: 'Remove from the list',
+				// The right sidebar card and the media-source switcher.
+				mediaPanel: 'Project media',
+				mediaPanelHint: 'The project gallery, generation and montage in the right panel',
+				libraryTitle: 'Media source',
+				librarySource: 'Source',
+				libraryStudio: 'Shared studio',
+				librarySubdir: 'Subfolder',
+				librarySubdirHint: 'A folder inside dsh-media, for example shots/2026',
+				libraryApply: 'Apply',
+				librarySaved: 'The media source has been switched',
+				librarySubdirKept: 'That subfolder was not accepted; the previous one stands',
+				libraryUnsupported: 'The host has no workspace registry, so only the shared studio is available',
+				libraryNoProjects: 'No projects yet, so only the shared studio is available',
+				libraryCurrent: 'Library',
+				gitignoreAdd: 'Add dsh-media to .gitignore',
+				gitignoreBusy: 'Adding…',
+				gitignoreAdded: 'dsh-media has been added to .gitignore',
+				gitignorePresent: 'dsh-media is already in .gitignore',
 			},
 		};
 
@@ -363,6 +409,30 @@ window.__ModuleLoader__.load({
 				h('circle', { cx: 7.4, cy: 9.4, r: 1.35 }),
 				h('path', { d: 'M3.4 15.6 7.9 11.7l3.6 3.1 2.7-2.3 3.15 2.7' }),
 				h('path', { d: 'M19.4 2.6l.85 2.05 2.05.85-2.05.85-.85 2.05-.85-2.05L16.5 5.5l2.05-.85z' }));
+		}
+
+		/**
+		 * The plugin's own tile, the very shape `icon.svg` draws: one blue tile
+		 * with a white sun and a white ridge. It is the guide card's glyph in the
+		 * right sidebar and the chip's mark, which is where the plugin has to be
+		 * recognizable at 14px, so it keeps two white shapes and no outline.
+		 */
+		function MediaMark({ size = 26, className }) {
+			return h('svg', {
+				viewBox: '0 0 64 64', width: size, height: size, className, 'aria-hidden': 'true',
+			},
+				h('defs', null,
+					h('linearGradient', {
+						id: 'dsh-is-media-tile', x1: '6', y1: '6', x2: '58', y2: '58', gradientUnits: 'userSpaceOnUse',
+					},
+						h('stop', { offset: '0', stopColor: '#6b9bf7' }),
+						h('stop', { offset: '1', stopColor: '#4a5fd6' })),
+					h('clipPath', { id: 'dsh-is-media-window' },
+						h('rect', { x: 6, y: 6, width: 52, height: 52, rx: 14 }))),
+				h('rect', { x: 6, y: 6, width: 52, height: 52, rx: 14, fill: 'url(#dsh-is-media-tile)' }),
+				h('g', { clipPath: 'url(#dsh-is-media-window)' },
+					h('circle', { cx: 23, cy: 23.5, r: 5.2, fill: '#ffffff' }),
+					h('path', { d: 'M0 58 L25 28 L37 43 L44 34 L66 58 Z', fill: '#ffffff' })));
 		}
 
 		function IconStar({ size = 15, filled = false }) {
@@ -630,6 +700,20 @@ window.__ModuleLoader__.load({
 .dsh-is-dot-on { background: var(--dsw-alias-state-success-primary, #3fa96b); }
 .dsh-is-dot-off { background: var(--dsw-alias-state-error-primary, #e5646a); }
 .dsh-is-hint { font-size: 12px; color: var(--dsw-alias-label-tertiary, #8b93a1); line-height: 1.5; }
+
+.dsh-is-library {
+	display: flex; flex-wrap: wrap; align-items: center; gap: 8px 10px; margin-top: 14px;
+	padding: 10px 12px; border: 1px solid var(--dsw-alias-border-l2, rgba(255,255,255,0.08));
+	border-radius: var(--dsw-radius-lg, 12px);
+}
+.dsh-is-library-label { font-size: 12px; font-weight: 600; color: var(--dsw-alias-label-secondary, #b8bfca); }
+.dsh-is-library .dsh-is-input { width: auto; min-width: 180px; }
+.dsh-is-library-root {
+	font-size: 12px; color: var(--dsw-alias-label-tertiary, #8b93a1);
+	overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%;
+}
+.dsh-is-library-ok { font-size: 12px; color: var(--dsw-alias-state-success-primary, #3fa96b); }
+.dsh-is-tab-title { display: inline-flex; align-items: center; gap: 6px; }
 `;
 
 		/** Inject the stylesheet once per document. */
@@ -1300,6 +1384,157 @@ window.__ModuleLoader__.load({
 								h('div', { className: 'dsh-is-card-caption' }, item.kind === 'video' ? `🎬 ${item.modelLabel}` : item.modelLabel))))));
 		}
 
+		/**
+		 * The media-source switcher: the shared studio or a folder inside one of
+		 * the host's projects, the subfolder the studio writes into, and the one
+		 * git hygiene action that follows from pointing it at a repository.
+		 *
+		 * The host owns every path. This component speaks only the fixed
+		 * contract — `GET /workspaces` for the project list and the support flag,
+		 * `POST /config` for the choice, `POST /gitignore` for the `dsh-media/`
+		 * line — and reads the current values from `/state.library`, so a save
+		 * re-reads the page state instead of guessing what the host kept.
+		 *
+		 * The gitignore action is offered only while the chosen project is a
+		 * repository that does not ignore the library yet (`git === true &&
+		 * ignored === false`); anywhere else the same request would be a lie.
+		 */
+		function LibraryBar({ library, dict, onChanged, onNotice, onError }) {
+			const [subdir, setSubdir] = useState(library.subdir || '');
+			const [busy, setBusy] = useState(false);
+			const [gitBusy, setGitBusy] = useState(false);
+			const [gitResult, setGitResult] = useState('');
+			// `/workspaces` is the only route that says whether the host even has
+			// a workspace registry, so it is asked once; an absent answer leaves
+			// the block from `/state` in charge.
+			const [registry, setRegistry] = useState(null);
+
+			useEffect(() => {
+				let cancelled = false;
+				void (async () => {
+					try {
+						const body = await api('/workspaces');
+						if (!cancelled) {
+							setRegistry({
+								supported: body.supported !== false,
+								workspaces: Array.isArray(body.workspaces) ? body.workspaces : [],
+							});
+						}
+					} catch {
+						// The block from `/state` already carries the projects.
+					}
+				})();
+				return () => { cancelled = true; };
+			}, []);
+
+			// A save rewrites the block, so the field follows the host afterwards.
+			useEffect(() => { setSubdir(library.subdir || ''); }, [library.subdir]);
+
+			const workspaces = Array.isArray(library.workspaces) && library.workspaces.length > 0
+				? library.workspaces
+				: registry && Array.isArray(registry.workspaces) ? registry.workspaces : [];
+			const supported = library.supported !== false && (registry === null || registry.supported !== false);
+			const source = library.source === 'workspace' ? 'workspace' : 'studio';
+			const project = source === 'workspace' ? (library.workspace || (workspaces[0] ? workspaces[0].dir : '')) : '';
+			const projectMissing = source === 'workspace' && project !== ''
+				&& !workspaces.some((entry) => entry && entry.dir === project);
+
+			const choose = async (nextSource, nextProject) => {
+				setBusy(true);
+				if (onError) onError('');
+				try {
+					const wanted = subdir.trim();
+					const body = await api('/config', {
+						method: 'POST',
+						body: JSON.stringify({
+							librarySource: nextSource,
+							libraryWorkspace: nextSource === 'workspace' ? nextProject : undefined,
+							librarySubdir: wanted,
+						}),
+					});
+					// The host drops a subdirectory it cannot accept and answers with
+					// the value that stands, so the field follows that and the person
+					// is told rather than left with a value nothing kept.
+					const kept = body.config && typeof body.config.librarySubdir === 'string'
+						? body.config.librarySubdir
+						: wanted;
+					setSubdir(kept);
+					await onChanged();
+					if (onNotice) onNotice(kept === wanted ? dict.librarySaved : dict.librarySubdirKept);
+				} catch (failure) {
+					if (onError) onError(failure.message);
+				} finally {
+					setBusy(false);
+				}
+			};
+
+			const addToGitignore = async () => {
+				setGitBusy(true);
+				setGitResult('');
+				if (onError) onError('');
+				try {
+					const body = await api('/gitignore', { method: 'POST' });
+					const message = body.changed === true ? dict.gitignoreAdded : dict.gitignorePresent;
+					setGitResult(message);
+					if (onNotice) onNotice(message);
+					await onChanged();
+				} catch (failure) {
+					if (onError) onError(failure.message);
+				} finally {
+					setGitBusy(false);
+				}
+			};
+
+			return h('div', { className: 'dsh-is-library', 'data-dsh-is-library': source },
+				h('span', { className: 'dsh-is-library-label' }, dict.libraryTitle),
+				h('span', { className: 'dsh-is-field' }, dict.librarySource,
+					h('select', {
+						value: source === 'workspace' ? `workspace:${project}` : 'studio',
+						disabled: busy,
+						onChange: (event) => {
+							const value = event.target.value;
+							if (value === 'studio') void choose('studio', '');
+							else void choose('workspace', value.slice('workspace:'.length));
+						},
+					},
+						h('option', { value: 'studio' }, dict.libraryStudio),
+						projectMissing ? h('option', { value: `workspace:${project}` }, project) : null,
+						workspaces.map((entry) => h('option', {
+							key: entry.dir,
+							value: `workspace:${entry.dir}`,
+						}, entry.name || entry.dir)))),
+				h('span', { className: 'dsh-is-field' }, dict.librarySubdir,
+					h('input', {
+						className: 'dsh-is-input',
+						type: 'text',
+						value: subdir,
+						placeholder: dict.librarySubdirHint,
+						disabled: busy,
+						onChange: (event) => setSubdir(event.target.value),
+						onKeyDown: (event) => { if (event.key === 'Enter') void choose(source, project); },
+					})),
+				h('button', {
+					className: 'dsh-is-button',
+					disabled: busy,
+					onClick: () => void choose(source, project),
+				}, busy ? dict.saving : dict.libraryApply),
+				h('span', { className: 'dsh-is-library-root', title: library.root || '' },
+					`${dict.libraryCurrent}: ${library.root || '—'}`),
+				!supported
+					? h('span', { className: 'dsh-is-hint' }, dict.libraryUnsupported)
+					: source === 'studio' && workspaces.length === 0
+						? h('span', { className: 'dsh-is-hint' }, dict.libraryNoProjects)
+						: null,
+				library.git === true && library.ignored === false
+					? h('button', {
+						className: 'dsh-is-button dsh-is-button-primary dsh-is-gitignore',
+						disabled: gitBusy,
+						onClick: () => void addToGitignore(),
+					}, gitBusy ? dict.gitignoreBusy : dict.gitignoreAdd)
+					: null,
+				gitResult !== '' ? h('span', { className: 'dsh-is-library-ok' }, gitResult) : null);
+		}
+
 		/** The Images page: prompt bar, templates, gallery, and the lightbox. */
 		function ImagesPanel() {
 			const dict = strings();
@@ -1530,6 +1765,16 @@ window.__ModuleLoader__.load({
 							`${state.stats.total} ${dict.itemsCount} · ${state.stats.images} / ${state.stats.videos}`,
 							state.version ? h('span', { title: dict.versionTitle }, ` · v${state.version}`) : null) : null)),
 
+				state && state.library
+					? h(LibraryBar, {
+						library: state.library,
+						dict,
+						onChanged: () => { void refreshState(); void refreshGallery(); },
+						onNotice: setNotice,
+						onError: setError,
+					})
+					: null,
+
 				!keyReady && state
 					? h('div', { className: 'dsh-is-banner dsh-is-banner-error' },
 						h('span', null, `${dict.noKey}. ${dict.noKeyHint}`))
@@ -1729,13 +1974,54 @@ window.__ModuleLoader__.load({
 			return h(IconImages, { size });
 		}
 
+		/**
+		 * The right sidebar's tab type: one guide card next to Files, Terminal
+		 * and Browser whose page is this plugin's own `ImagesPanel`.
+		 *
+		 * The card list is not a slot other plugins could push into — the
+		 * sidebar builds it from the `guide` entries of every registered tab
+		 * type — so the card is contributed through `ctx.sidebarRightTabs`. The
+		 * body then registers under the same id in the keyed
+		 * `sidebar.right.pane.tab` seat, which is the documented two-stage path
+		 * (`ui-sidebar-documentpreview` and the third-party SEO card both take
+		 * it). The `rightbar` seat itself is declared `kind: "single"` and
+		 * belongs to the sidebar package: registering there would evict whatever
+		 * occupied it first, so this plugin never touches it.
+		 */
+		function mediaTabDefinition() {
+			return {
+				id: MEDIA_TAB_ID,
+				kind: MEDIA_KIND,
+				multiple: false,
+				priority: 'builtin',
+				title: () => strings().mediaPanel,
+				guide: [{
+					id: 'media',
+					order: 45,
+					title: () => strings().mediaPanel,
+					description: () => strings().mediaPanelHint,
+					icon: MediaMark,
+				}],
+			};
+		}
+
+		/** The tab chip: the plugin's tile, small, then the name. */
+		function MediaTabTitle() {
+			return h('span', { className: 'dsh-is-tab-title' },
+				h(MediaMark, { size: 14 }),
+				strings().mediaPanel);
+		}
+
 		return {
 			inject: ['slots'],
 
 			// Surfaces for the test suite only: the harness ignores unknown keys on
 			// a client module, and rendering these components outside a browser is
 			// the only way to prove the page does not throw on real data.
-			__test: { ImagesPanel, MontageTab, StudioSettings, Lightbox, GalleryCard, STRINGS },
+			__test: {
+				ImagesPanel, MontageTab, StudioSettings, Lightbox, GalleryCard, LibraryBar, MediaMark, MediaTabTitle,
+				mediaTabDefinition, MEDIA_TAB_ID, MEDIA_KIND, STRINGS,
+			},
 
 			apply(ctx) {
 				// The global page and the sidebar entry that selects it share one id.
@@ -1749,6 +2035,28 @@ window.__ModuleLoader__.load({
 					order: 20,
 					label: () => strings().panel,
 				}, ImagesPanelIcon));
+
+				// The right sidebar card. `ctx.inject` waits for the sidebar's tab
+				// registry instead of assuming the sidebar package loaded first, and
+				// a harness without that service (the metadata test's stub) simply
+				// skips the card rather than throwing.
+				if (typeof ctx.inject === 'function') {
+					ctx.inject(['sidebarRightTabs'], (scope) => {
+						scope.effect(() => scope.sidebarRightTabs.register(mediaTabDefinition()), 'image-studio: right sidebar card');
+					});
+				}
+
+				// The card's page, in the keyed body seat — never the single-occupancy
+				// `rightbar` seat. The title seat keeps the chip identifiable.
+				ctx.slots.inject('sidebar.right.pane.tab', () => ctx.slots.register({
+					name: 'sidebar.right.pane.tab',
+					key: MEDIA_TAB_ID,
+				}, ImagesPanel));
+
+				ctx.slots.inject('sidebar.right.pane.tab.title', () => ctx.slots.register({
+					name: 'sidebar.right.pane.tab.title',
+					key: MEDIA_TAB_ID,
+				}, MediaTabTitle));
 
 				// The plugin's own settings live on the bundle page and behind the
 				// row's Configure control, exactly like a shipped plugin's.

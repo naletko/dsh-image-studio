@@ -44,7 +44,7 @@ function makeInstance(seed) {
  * Load the client module with a React whose hooks follow the instance the
  * renderer is currently inside.
  *
- * @returns `{ components, render, findAll, textOf }`.
+ * @returns `{ components, module, render, findAll, textOf }`.
  */
 function loadHarness() {
 	let current = makeInstance({});
@@ -117,7 +117,7 @@ function loadHarness() {
 		return out;
 	}
 
-	return { components: module.__test, render, textOf, findAll, seeds, react };
+	return { components: module.__test, module, render, textOf, findAll, seeds, react };
 }
 
 const catalog = {
@@ -164,6 +164,20 @@ const loadedState = {
 	credentials: { fal: { configured: true, source: 'file', writable: true } },
 	storage: { root: 'C:/Users/me/.dsh/image-studio' },
 	stats: { total: 2, images: 1, videos: 1, favorites: 0 },
+};
+
+/** The `library` block of a machine whose media lives inside a project. */
+const projectLibrary = {
+	source: 'workspace',
+	workspaces: [
+		{ name: 'site', dir: 'C:/work/site' },
+		{ name: 'shop', dir: 'C:/work/shop' },
+	],
+	workspace: 'C:/work/site',
+	subdir: 'shots/2026',
+	root: 'C:/work/site/dsh-media/shots/2026',
+	git: true,
+	ignored: false,
 };
 
 test('the page renders before the host answers anything', () => {
@@ -368,4 +382,131 @@ test('the montage tab says so when ffmpeg is missing instead of failing at build
 	assert.match(textOf(tree), /ffmpeg не найден/);
 	assert.match(textOf(tree), /ENOENT/);
 	assert.equal(findAll(tree, 'button').length, 0, 'no build action without ffmpeg');
+});
+
+test('the media-source switcher renders in the header and lists the projects', () => {
+	const { components, render, textOf, findAll, seeds, react } = loadHarness();
+	seeds.set(components.ImagesPanel, { 0: { ...loadedState, library: projectLibrary }, 1: [] });
+	const tree = render(react.createElement(components.ImagesPanel, {}));
+	const text = textOf(tree);
+
+	const bar = findAll(tree, 'div').find((node) => node.props.className === 'dsh-is-library');
+	assert.ok(bar, 'the page header carries the switcher');
+	assert.match(text, /Источник медиа/);
+	assert.match(text, /Общая студия/, 'the shared studio stays an option');
+	assert.match(text, /site/);
+	assert.match(text, /shop/);
+
+	const source = findAll(tree, 'select').find((node) => String(node.props.value).startsWith('workspace:'));
+	assert.equal(source.props.value, 'workspace:C:/work/site', 'the configured project is selected');
+
+	const subdir = findAll(tree, 'input').find((node) => node.props.value === 'shots/2026');
+	assert.ok(subdir, 'the subfolder inside dsh-media is editable');
+	assert.match(subdir.props.placeholder, /dsh-media/, 'the field says the subfolder sits under dsh-media');
+});
+
+test('the gitignore action appears only while a project is a repository without the entry', () => {
+	const { components, render, textOf, findAll, seeds, react } = loadHarness();
+	const page = (library) => {
+		seeds.set(components.ImagesPanel, { 0: { ...loadedState, library }, 1: [] });
+		return render(react.createElement(components.ImagesPanel, {}));
+	};
+
+	const dirty = page(projectLibrary);
+	assert.match(textOf(dirty), /Добавить dsh-media в \.gitignore/);
+	const action = findAll(dirty, 'button')
+		.find((node) => String(node.children.join('')) === 'Добавить dsh-media в .gitignore');
+	assert.equal(typeof action.props.onClick, 'function');
+
+	const ignored = page({ ...projectLibrary, ignored: true });
+	assert.equal(/Добавить dsh-media в \.gitignore/.test(textOf(ignored)), false, 'an ignored library needs no action');
+
+	const notARepository = page({ ...projectLibrary, git: false });
+	assert.equal(
+		/Добавить dsh-media в \.gitignore/.test(textOf(notARepository)),
+		false,
+		'a folder that is not a repository is never offered that write',
+	);
+});
+
+test('the switcher still renders when the host has no workspace registry', () => {
+	const { components, render, textOf, findAll, seeds, react } = loadHarness();
+	seeds.set(components.ImagesPanel, {
+		0: {
+			...loadedState,
+			library: {
+				...projectLibrary,
+				source: 'studio',
+				supported: false,
+				workspaces: [],
+				workspace: '',
+				subdir: '',
+				root: 'C:/Users/me/.dsh/image-studio',
+			},
+		},
+		1: [],
+	});
+	const tree = render(react.createElement(components.ImagesPanel, {}));
+	const text = textOf(tree);
+
+	assert.match(text, /реестр воркспейсов/, 'the page says why no project is offered');
+	assert.match(text, /Общая студия/);
+	const source = findAll(tree, 'select').find((node) => String(node.props.value) === 'studio');
+	assert.equal(source.children.filter((child) => child && child.type === 'option').length, 1, 'only the shared studio is offered');
+	assert.ok(findAll(tree, 'textarea').length >= 1, 'the rest of the page still renders');
+});
+
+test('the right sidebar card opens the same page and carries the plugin tile', () => {
+	const { components, module, render, textOf, findAll, react } = loadHarness();
+	const definition = components.mediaTabDefinition();
+
+	assert.equal(definition.id, components.MEDIA_TAB_ID);
+	assert.equal(definition.kind, components.MEDIA_KIND);
+	assert.equal(definition.guide.length, 1, 'exactly one card is contributed');
+	assert.equal(definition.guide[0].title(), 'Медиа проекта');
+	assert.match(definition.guide[0].description(), /панели справа/);
+	assert.equal(typeof definition.guide[0].icon, 'function');
+
+	const card = render(react.createElement(definition.guide[0].icon, { size: 26 }));
+	const tile = findAll(card, 'rect').find((node) => node.props.fill === 'url(#dsh-is-media-tile)');
+	assert.ok(tile, 'the card glyph is the blue tile icon.svg draws');
+	assert.equal(tile.props.rx, 14);
+
+	const chip = render(react.createElement(components.MediaTabTitle, {}));
+	assert.match(textOf(chip), /Медиа проекта/);
+
+	// The card comes from the sidebar's tab registry; the body goes into the
+	// keyed pane seat. `rightbar` is declared `kind: "single"` and belongs to
+	// the sidebar package, so it must stay untouched.
+	const registered = [];
+	const types = [];
+	module.apply({
+		slots: {
+			register: (options, component) => { registered.push({ options, component }); return { dispose() {} }; },
+			inject: (name, callback) => {
+				const value = callback(name);
+				if (value && typeof value.next === 'function') {
+					let step = value.next();
+					while (step.done !== true) step = value.next();
+				}
+			},
+		},
+		inject: (deps, callback) => callback({
+			effect: (fn) => fn(),
+			sidebarRightTabs: { register: (value) => { types.push(value); return () => {}; } },
+		}),
+	});
+
+	assert.equal(types.length, 1, 'the guide card is registered as a tab type');
+	assert.equal(types[0].kind, components.MEDIA_KIND);
+
+	const body = registered.filter((entry) => entry.options.name === 'sidebar.right.pane.tab');
+	assert.equal(body.length, 1);
+	assert.equal(body[0].options.key, components.MEDIA_TAB_ID);
+	assert.equal(body[0].component, components.ImagesPanel, 'the card shows the very same page as the sidebar');
+
+	const titles = registered.filter((entry) => entry.options.name === 'sidebar.right.pane.tab.title');
+	assert.equal(titles.length, 1);
+	assert.equal(titles[0].options.key, components.MEDIA_TAB_ID);
+	assert.equal(registered.some((entry) => entry.options.name === 'rightbar'), false, 'the single-occupancy seat is left alone');
 });
