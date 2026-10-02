@@ -43,8 +43,10 @@ Images
   browsing costs nothing, survives a restart, and works while the provider is down. Favourites, prompt search and
   per-kind filters narrow the grid.
 - **The gallery can live inside a project.** The shared studio under `<DSH_HOME>/image-studio` is the default; the
-  `librarySource` configuration can point the same gallery at `<project>/dsh-media` instead, so screenshots and clips
-  sit beside the code they belong to. The root is resolved per request, so a change applies without a restart.
+  **Media source** control in the page header can point the same page at `<project>/dsh-media` instead, so screenshots
+  and clips sit beside the code they belong to. The root is resolved per request, so the switch needs no restart.
+- **A card in the right panel too.** On a harness whose right sidebar exposes a tab registry, the plugin adds a
+  **Project media** entry that opens the same page, so the gallery can stay beside the terminal.
 - **Import by link.** Paste a direct `http(s)` link to an image or a video and it is downloaded into the same gallery.
 - **A lightbox that is actually useful.** Judge the picture at full size, download the original, copy the prompt, mark
   it a favourite, or press **Animate in Kling** to turn that exact still into a shot.
@@ -206,10 +208,12 @@ cannot ask the package manager for something else.
 
 ## Where the library lives
 
-The media can live in one of two places, chosen by the `library*` keys in the row configuration (or the equivalent
-`POST /config` call):
+The media can live in one of two places. The **Media source** control in the page header chooses which, and the same
+choice can be made from configuration with the `library*` keys:
 
 ```text
+Media source:  Source: Shared studio ▾   Subfolder: ▾   [Apply]   Folder: <the root in use>
+
 librarySource: studio                                  →  <DSH_HOME>/image-studio
 librarySource: workspace, libraryWorkspace: /path/to/project, librarySubdir: shots/2026
                                                        →  /path/to/project/dsh-media/shots/2026
@@ -236,9 +240,9 @@ A configured project that no longer exists (moved, renamed, deleted) does not br
 the shared folder, and `/state`'s `library.root` says which root actually answered. Switching source does **not** move
 existing media: each gallery is a separate folder and the other one is simply not shown.
 
-When a configured project is a git repository and does not ignore the media folder yet,
-`POST /api/image-studio/gitignore` appends `dsh-media/` to its `.gitignore` once and never writes to a directory that is
-not a repository.
+When the chosen project is a git repository that does not ignore the media folder yet, the page offers the
+**Add dsh-media to .gitignore** button; it calls `POST /api/image-studio/gitignore`, which appends `dsh-media/` once and
+never writes to a directory that is not a repository.
 
 Nothing in either folder is ever served to another machine: `/api/image-studio/file` answers loopback callers only, and
 every path is rebuilt from a validated id, never from a prompt or a remote URL. Both folders are safe to back up or
@@ -352,7 +356,8 @@ key in the `Authorization` header. fal's own terms and privacy policy apply to t
 stay in `<DSH_HOME>/image-studio`. The key sits in the harness credential store (or the launching environment) and is
 read per call. The plugin sends no telemetry, has no account of its own, and does not talk to any other server. If the
 library points into a project, those files are the project's own: they still never leave the machine, but they will be
-committed to the repository unless `dsh-media/` is ignored — which is what `POST /api/image-studio/gitignore` is for.
+committed to the repository unless `dsh-media/` is ignored — which is what the page's **Add dsh-media to .gitignore**
+button (and the `POST /api/image-studio/gitignore` route behind it) is for.
 
 The only other network calls it can make are:
 

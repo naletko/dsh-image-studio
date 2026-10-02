@@ -12,6 +12,11 @@ release was qualified against.
   back to the shared studio instead of failing every route. The settings file always stays in the shared studio, and
   `POST /gitignore` adds `dsh-media/` to a project's `.gitignore` idempotently, only when that folder is a git
   repository.
+- **The library is switchable from the page.** A **Media source** control in the header picks the shared studio or a
+  project, sets an optional subfolder and shows the folder in use; a project that is a git repository and does not
+  ignore the media folder yet gets an **Add dsh-media to .gitignore** button.
+- **A card in the right panel.** Where the right sidebar exposes a tab registry, **Project media** opens the same page
+  beside the terminal.
 - New host routes: `GET /workspaces` (the project list from the workspace registry), `POST /gitignore`, and a `library`
   block in `/state` carrying `source`, `workspaces`, `workspace`, `subdir`, `root`, `git`, `ignored`.
 
