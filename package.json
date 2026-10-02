@@ -48,7 +48,8 @@
       "immediately": true,
       "inject": [
         "@deepseek-ai/dsh-client-ui-layout",
-        "@deepseek-ai/dsh-client-ui-sidebar"
+        "@deepseek-ai/dsh-client-ui-sidebar",
+        "@deepseek-ai/dsh-client-ui-sidebar-right"
       ]
     }
   },
@@ -67,6 +68,8 @@
     "@deepseek-ai/cordis": "4.0.1 || 4.0.2 || 4.0.3 || 4.0.4",
     "@deepseek-ai/dsh-client-ui-layout": "0.2.0-rc.2 || 0.2.0-rc.1 || 0.1.7-rc.2",
     "@deepseek-ai/dsh-client-ui-sidebar": "0.2.0-rc.2 || 0.2.0-rc.1 || 0.1.7-rc.2",
+    "@deepseek-ai/dsh-client-ui-sidebar-right": "0.2.0-rc.2 || 0.2.0-rc.1",
+    "@deepseek-ai/dsh-tools": "0.2.0-rc.2 || 0.2.0-rc.1",
     "react": "^18.2.0"
   },
   "peerDependenciesMeta": {
@@ -77,6 +80,12 @@
       "optional": true
     },
     "@deepseek-ai/dsh-client-ui-sidebar": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-client-ui-sidebar-right": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-tools": {
       "optional": true
     },
     "react": {

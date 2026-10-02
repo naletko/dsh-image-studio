@@ -13,9 +13,47 @@ import fs from 'node:fs';
 import path from 'node:path';
 import test from 'node:test';
 import { Writable } from 'node:stream';
+import { registerHooks } from 'node:module';
 
 import { apply, inject as declaredInject, isLocalRequest, pickConfig, publicEntry } from '../index.js';
 import { addEntries, newId, writeEntryFile } from '../lib/gallery.js';
+
+/**
+ * The harness package a tool definition is built with.
+ *
+ * `@deepseek-ai/dsh-tools` is a peer dependency, and this repository has no
+ * node_modules — the plugin loads it with a dynamic `import()` for exactly that
+ * reason, so the host half stays importable in a checkout. The suite answers
+ * that import with a stand-in enforcing the same registration contract the real
+ * `defineTool` does (`name`, `description`, `parameters`, and an object-rooted
+ * `output { schema, render }`), and hands the definition back unchanged so a
+ * test can drive the tool's own `execute`. The hook is process-local: nothing
+ * is written to disk and no package is installed.
+ */
+const TOOLS_STAND_IN = `
+export function defineTool(options) {
+	const output = options?.output;
+	if (typeof options?.name !== 'string' || options.name === '') throw new TypeError('a tool must declare a name');
+	if (typeof options.description !== 'string' || options.description === '') throw new TypeError('a tool must declare a description');
+	if (options.parameters === null || typeof options.parameters !== 'object') throw new TypeError('a tool must declare parameters');
+	if (output === null || typeof output !== 'object' || typeof output.render !== 'function' || typeof output.schema !== 'object') {
+		throw new TypeError('a tool must declare output { schema, render }');
+	}
+	if (output.schema.type !== 'object' || output.schema.additionalProperties !== false) {
+		throw new TypeError('a tool output must be an object-rooted, closed schema');
+	}
+	return options;
+}
+`;
+
+registerHooks({
+	resolve(specifier, context, nextResolve) {
+		if (specifier === '@deepseek-ai/dsh-tools') {
+			return { url: `data:text/javascript,${encodeURIComponent(TOOLS_STAND_IN)}`, shortCircuit: true };
+		}
+		return nextResolve(specifier, context);
+	},
+});
 
 /** A 1×1 PNG, so downloaded media is really an image. */
 const PNG = Buffer.from(
@@ -79,6 +117,33 @@ function fakeCredentials(initial = {}) {
 		set: async (ref, value) => { store.set(ref, value); },
 		unset: async (ref) => { store.delete(ref); },
 	};
+}
+
+/** A stand-in for the harness tool registry: it records what the plugin registers. */
+function fakeToolRegistry() {
+	return {
+		registered: [],
+		register(definition) {
+			this.registered.push(definition);
+			return () => {};
+		},
+	};
+}
+
+/**
+ * The tool attaches itself after an asynchronous `import()` of the registry
+ * package, so a test waits for the registration rather than assuming it.
+ *
+ * @param registry - the stand-in tool registry.
+ * @returns the registered `image_generate` definition.
+ */
+async function waitForTool(registry, timeoutMs = 3000) {
+	const deadline = Date.now() + timeoutMs;
+	while (registry.registered.length === 0) {
+		if (Date.now() > deadline) throw new Error('the image_generate tool was never registered');
+		await new Promise((resolve) => setTimeout(resolve, 5));
+	}
+	return registry.registered[0];
 }
 
 /** A request object with the surface the handler uses. */
@@ -154,9 +219,11 @@ async function call(handler, request) {
  * @param options.config - the row configuration.
  * @param options.pluginManager - a stand-in for the harness plugin manager.
  * @param options.workspaceRegistry - a stand-in for the project registry.
- * @returns `{ handler, root, credentials }`.
+ * @param options.tools - a stand-in for the tool registry; omitted means a
+ *   composition that mounts no tool service at all.
+ * @returns `{ handler, root, credentials, tools }`.
  */
-function mount({ credentials = fakeCredentials(), config = {}, pluginManager, workspaceRegistry } = {}) {
+function mount({ credentials = fakeCredentials(), config = {}, pluginManager, workspaceRegistry, tools } = {}) {
 	const root = path.join(import.meta.dirname, '.tmp', `host-${newId()}`);
 	fs.mkdirSync(root, { recursive: true });
 	process.env.DSH_IMAGE_STUDIO_HOME = root;
@@ -168,14 +235,19 @@ function mount({ credentials = fakeCredentials(), config = {}, pluginManager, wo
 	};
 	if (pluginManager !== undefined) services.pluginManager = pluginManager;
 	if (workspaceRegistry !== undefined) services.workspaceRegistry = workspaceRegistry;
+	if (tools !== undefined) services.tools = tools;
 
 	const ctx = {
 		effect: (fn) => fn(),
 		// Cordis' `inject(deps, callback)` runs the callback only once every named
 		// service exists, which is how the plugin finds the plugin manager without
-		// requiring it.
+		// requiring it. The scope it hands over is a context too: it keeps
+		// `effect` (the tool registration wraps itself in one) and `inject`.
 		inject: (deps, callback) => {
-			const scope = {};
+			const scope = {
+				effect: (fn) => fn(),
+				inject: () => () => {},
+			};
 			let ready = true;
 			for (const dep of deps) {
 				if (!(dep in services)) {
@@ -199,7 +271,7 @@ function mount({ credentials = fakeCredentials(), config = {}, pluginManager, wo
 
 	apply(ctx, config);
 	assert.ok(registered, 'the plugin must register its HTTP surface');
-	return { handler: registered.handler, root, credentials };
+	return { handler: registered.handler, root, credentials, tools };
 }
 
 /** Parse a JSON response, failing loudly when the body is not JSON. */
@@ -880,4 +952,179 @@ test('/workspaces maps the project registry, and stays valid without one', async
 	const degraded = parse(await call(broken.handler, makeRequest({ url: '/api/image-studio/workspaces' })));
 	assert.equal(degraded.ok, true);
 	assert.equal(degraded.supported, false, 'a broken registry degrades instead of failing the page');
+});
+
+test('state says whether the library can be pointed at a project', async () => {
+	// The page reads `library.supported` while it mounts instead of asking
+	// /workspaces a second time, so the two routes must agree.
+	const without = mount();
+	const unsupported = parse(await call(without.handler, makeRequest({ url: '/api/image-studio/state' })));
+	assert.equal(unsupported.library.supported, false, 'no project registry, no project library');
+
+	const registry = { list: () => [{ id: 'a', title: 'Demo A', path: path.resolve('demo-project') }] };
+	const { handler } = mount({ workspaceRegistry: registry });
+	const supported = parse(await call(handler, makeRequest({ url: '/api/image-studio/state' })));
+	assert.equal(supported.library.supported, true);
+	assert.equal(supported.library.workspaces.length, 1, 'the same list /workspaces returns');
+});
+
+test('the chat tool is registered exactly once, and a composition without a tool registry still mounts', async () => {
+	const tools = fakeToolRegistry();
+	const { handler } = mount({ tools });
+	const definition = await waitForTool(tools);
+
+	assert.equal(tools.registered.length, 1, 'one registration per mount');
+	assert.equal(definition.name, 'image_generate');
+	assert.equal(typeof definition.description, 'string');
+	assert.equal(typeof definition.execute, 'function');
+	assert.equal(definition.parameters.prompt.required, true, 'the prompt is the one required argument');
+	assert.deepEqual(Object.keys(definition.parameters).sort(), ['aspect', 'count', 'model', 'prompt']);
+	assert.equal(typeof definition.output.render, 'function');
+	assert.deepEqual(definition.output.render({}, { summary: 'Generated 1 image.' }), [
+		{ type: 'text', text: 'Generated 1 image.' },
+	]);
+
+	const state = parse(await call(handler, makeRequest({ url: '/api/image-studio/state' })));
+	assert.equal(state.ok, true, 'the page is unaffected by the tool registration');
+
+	// A composition that mounts no tool service registers nothing and still
+	// serves the Images page; that is the `ctx.inject(['tools'], …)` guarantee.
+	const plain = mount();
+	assert.equal(parse(await call(plain.handler, makeRequest({ url: '/api/image-studio/state' }))).ok, true);
+	assert.equal(tools.registered.length, 1, 'the second mount had no registry to register into');
+});
+
+test('the chat tool explains a missing fal key instead of throwing or touching the network', async () => {
+	const tools = fakeToolRegistry();
+	mount({ tools });
+	const definition = await waitForTool(tools);
+
+	const savedKey = process.env.FAL_API_KEY;
+	delete process.env.FAL_API_KEY;
+	const realFetch = globalThis.fetch;
+	let touched = 0;
+	globalThis.fetch = async () => {
+		touched += 1;
+		throw new Error('a generation without a key must not reach the network');
+	};
+	try {
+		const value = await definition.execute({ prompt: 'a chair' }, {});
+		assert.equal(value.ok, false);
+		assert.match(value.error, /key/i, 'the reason names the missing key');
+		assert.match(value.summary, /key/i);
+		assert.deepEqual(value.images, []);
+		assert.equal(touched, 0, 'nothing is spent before the key exists');
+		assert.equal(JSON.stringify(value).includes('key_id:key_secret'), false, 'no credential is echoed back');
+	} finally {
+		globalThis.fetch = realFetch;
+		if (savedKey !== undefined) process.env.FAL_API_KEY = savedKey;
+	}
+});
+
+test('a fal failure comes back as a readable tool result, never a throw', async () => {
+	const credentials = fakeCredentials({ FAL_API_KEY: 'fal-id:fal-secret' });
+	const tools = fakeToolRegistry();
+	mount({ credentials, tools });
+	const definition = await waitForTool(tools);
+
+	const realFetch = globalThis.fetch;
+	globalThis.fetch = async () => new Response(JSON.stringify({ detail: 'no credit left' }), { status: 401 });
+	try {
+		const value = await definition.execute({ prompt: 'a chair' }, {});
+		assert.equal(value.ok, false, 'a provider rejection is an ordinary result');
+		assert.match(value.error, /key is invalid or has no access/i);
+		assert.match(value.summary, /No image was generated/);
+		assert.equal(JSON.stringify(value).includes('fal-secret'), false, 'the key stays out of the result');
+	} finally {
+		globalThis.fetch = realFetch;
+	}
+});
+
+test('the chat tool generates through the page path into the project media', async () => {
+	const workspace = makeWorkspaceDir('tool');
+	const mediaRoot = path.join(path.resolve(workspace), 'dsh-media', 'shots');
+	const credentials = fakeCredentials({ FAL_API_KEY: 'fal-id:fal-secret' });
+	const tools = fakeToolRegistry();
+	const { handler } = mount({
+		credentials,
+		tools,
+		config: { librarySource: 'workspace', libraryWorkspace: workspace, librarySubdir: 'shots' },
+	});
+	const definition = await waitForTool(tools);
+
+	const realFetch = globalThis.fetch;
+	const calls = [];
+	let submittedAuth;
+	globalThis.fetch = async (url, init = {}) => {
+		const target = String(url);
+		calls.push(target);
+		if (target === 'https://queue.fal.run/acme/custom-image' && (init.method ?? 'GET') === 'POST') {
+			submittedAuth = init.headers?.authorization;
+			return new Response(JSON.stringify({
+				status: 'IN_QUEUE',
+				request_id: 'req-tool',
+				status_url: 'https://queue.test/tool-status',
+				response_url: 'https://queue.test/tool-result',
+			}), { status: 200, headers: { 'content-type': 'application/json' } });
+		}
+		if (target === 'https://queue.test/tool-status') {
+			return new Response(JSON.stringify({ status: 'COMPLETED' }), { status: 200, headers: { 'content-type': 'application/json' } });
+		}
+		if (target === 'https://queue.test/tool-result') {
+			return new Response(JSON.stringify({ images: [{ url: 'https://cdn.test/tool.png', width: 8, height: 4, content_type: 'image/png' }] }),
+				{ status: 200, headers: { 'content-type': 'application/json' } });
+		}
+		if (target === 'https://cdn.test/tool.png') {
+			return new Response(PNG, { status: 200, headers: { 'content-type': 'image/png' } });
+		}
+		throw new Error(`unexpected fetch ${target}`);
+	};
+
+	try {
+		// A model that is not a fal slug is refused before anything is spent.
+		const rejected = await definition.execute({ prompt: 'a chair', model: 'not-a-slug' }, {});
+		assert.equal(rejected.ok, false);
+		assert.match(rejected.error, /fal model/i);
+		assert.equal(calls.length, 0, 'an unusable model never reaches fal');
+
+		const value = await definition.execute(
+			{ prompt: 'a blue teapot', model: 'acme/custom-image', aspect: '16:9', count: 1 },
+			{},
+		);
+		assert.equal(value.ok, true, value.error);
+		assert.equal(value.model, 'acme/custom-image', 'any fal endpoint slug is accepted');
+		assert.equal(value.aspect, '16:9');
+		assert.equal(value.count, 1);
+		assert.equal(value.root, mediaRoot, 'the tool writes where the page points the library');
+		assert.equal(calls[0], 'https://queue.fal.run/acme/custom-image');
+		assert.equal(submittedAuth, 'Key fal-id:fal-secret', 'the key travels to fal through the same seam the page uses');
+
+		const image = value.images[0];
+		assert.equal(image.mime, 'image/png');
+		assert.equal(image.bytes, PNG.length);
+		assert.equal(fs.existsSync(image.file), true, 'the bytes are on disk');
+		assert.deepEqual(fs.readFileSync(image.file), PNG);
+		assert.ok(image.file.startsWith(path.join(mediaRoot, 'files')), 'media sits in the library root the page reads');
+		assert.equal(image.markdown, `![a blue teapot](<${image.file.replace(/\\/g, '/')}>)`,
+			'the result carries a markdown link to the file it just stored');
+		assert.equal(value.markdown, image.markdown);
+		assert.equal(JSON.stringify(value).includes('fal-secret'), false, 'the key never travels back into the result');
+
+		// The page finds exactly the record the tool wrote: one gallery, one path.
+		const gallery = parse(await call(handler, makeRequest({ url: '/api/image-studio/gallery' })));
+		assert.equal(gallery.items.length, 1);
+		assert.equal(gallery.items[0].id, image.id);
+		assert.equal(gallery.items[0].url, image.url);
+		const served = await call(handler, makeRequest({ url: image.url }));
+		assert.deepEqual(served.raw, PNG);
+
+		assert.deepEqual([...new Set(calls)], [
+			'https://queue.fal.run/acme/custom-image',
+			'https://queue.test/tool-status',
+			'https://queue.test/tool-result',
+			'https://cdn.test/tool.png',
+		], 'nothing is fetched except the fal call and the media fal returned');
+	} finally {
+		globalThis.fetch = realFetch;
+	}
 });

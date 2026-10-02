@@ -40,10 +40,8 @@ import {
 	TEMPLATES,
 	VIDEO_DURATIONS,
 	VIDEO_MODELS,
-	buildImageInput,
 	buildVideoInput,
 	clampCount,
-	extractImages,
 	extractVideo,
 	isKnownAspect,
 	resolveModel,
@@ -86,6 +84,7 @@ import {
 	sanitizeLibrarySubdir,
 	workspaceGitState,
 } from './lib/library.js';
+import { attachImageGenerateTool, generateImages } from './lib/tool.js';
 
 // The plan is deliberately narrow: `webServer` for the HTTP surface, and
 // `credentials` because the fal key is read and written through the harness
@@ -274,11 +273,11 @@ export function apply(ctx, config) {
 	 * @returns the `library` block of `/state`.
 	 */
 	const libraryBlock = (root) => {
-		const { workspaces } = listWorkspaces(workspaceRegistry);
+		const { supported, workspaces } = listWorkspaces(workspaceRegistry);
 		const workspace = typeof live.libraryWorkspace === 'string' ? live.libraryWorkspace : '';
 		const subdir = typeof live.librarySubdir === 'string' ? live.librarySubdir : '';
 		const { git, ignored } = workspaceGitState(workspace);
-		return { source: live.librarySource, workspaces, workspace, subdir, root, git, ignored };
+		return { supported, source: live.librarySource, workspaces, workspace, subdir, root, git, ignored };
 	};
 
 	/** Last check result, kept so a page reopen does not re-ask GitHub. */
@@ -342,6 +341,16 @@ export function apply(ctx, config) {
 		return { value: fromEnv, source: fromEnv === '' ? undefined : 'env' };
 	};
 
+	// The model-facing half: a person asks for a picture in the conversation and
+	// it lands in the library the page reads. The tool registry is optional, so
+	// the attachment goes through `ctx.inject`: a composition without `tools`
+	// registers no tool and the page keeps working.
+	attachImageGenerateTool(ctx, {
+		live,
+		resolveFalKey,
+		resolveRoot: libraryRoot,
+	});
+
 	/**
 	 * Report whether the key is set, where it came from, and whether this plugin
 	 * may write it — never the value itself.
@@ -403,33 +412,27 @@ export function apply(ctx, config) {
 	 * Run one text-to-image job: submit, poll, download every produced image,
 	 * append them to the gallery, and report progress as the queue moves.
 	 *
+	 * The work itself lives in `lib/tool.js` — the same function the
+	 * `image_generate` chat tool calls — so the page and the tool can never
+	 * drift into two generation paths. This wrapper only keeps the job record
+	 * the page polls up to date.
+	 *
 	 * @param job - the job record.
 	 * @param root - the library root the request resolved; the job keeps writing
 	 *   there even if the configuration changes while it runs.
 	 */
 	const runImageJob = async (job, root) => {
 		try {
-			const key = await resolveFalKey();
-			const problem = falKeyProblem(key.value);
-			if (problem !== undefined) throw new FalError(problem, 'fal-key-missing');
-
-			const model = resolveModel(job.request.model, 'image');
-			const input = buildImageInput({
-				model,
+			const result = await generateImages({ live, resolveFalKey, resolveRoot: () => root }, {
 				prompt: job.request.prompt,
+				model: job.request.model,
 				aspect: job.request.aspect,
 				count: job.request.count,
 				quality: job.request.quality,
 				resolution: job.request.resolution,
 				seed: job.request.seed,
-			});
-
-			job.status = 'running';
-			const result = await falWait({
-				slug: model.id,
-				input,
-				apiKey: key.value,
-				timeoutMs: live.imageTimeoutMs,
+			}, {
+				onStart: () => { job.status = 'running'; },
 				onProgress: (progress) => {
 					job.queuePosition = progress.queuePosition;
 					job.providerStatus = progress.status;
@@ -437,27 +440,10 @@ export function apply(ctx, config) {
 				},
 			});
 
-			const produced = extractImages(result);
-			if (produced.length === 0) throw new FalError('fal finished without returning an image.', 'fal-empty-result');
-
-			const entries = [];
-			for (const [index, item] of produced.entries()) {
-				const fetched = await fetchBytes(item.url);
-				entries.push(storeMedia(root, {
-					createdAt: Date.now(),
-					index,
-					kind: 'image',
-					prompt: job.request.prompt,
-					model: model.id,
-					modelLabel: model.label,
-					aspect: job.request.aspect,
-					width: item.width,
-					height: item.height,
-					sourceUrl: item.url,
-				}, fetched.bytes, item.contentType ?? fetched.contentType, 'png'));
-			}
-			addEntries(root, entries);
-			job.items = entries;
+			job.request.model = result.model.id;
+			job.request.aspect = result.aspect;
+			job.request.count = result.count;
+			job.items = result.entries;
 			job.status = 'done';
 		} catch (error) {
 			job.status = 'error';
