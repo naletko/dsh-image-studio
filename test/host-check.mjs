@@ -341,6 +341,24 @@ test('isLocalRequest accepts loopback addresses and rejects the rest', () => {
 	assert.equal(isLocalRequest(makeRequest({ url: '/', address: '127.0.0.1', origin: 'http://127.0.0.1.evil.com' })), false);
 });
 
+test('/local/status reports a ComfyUI that is not running instead of failing', async () => {
+	// The probe is pointed at port 9 (the discard port), which is not a ComfyUI:
+	// the "server is switched off" case, without depending on whatever may be
+	// listening on 8188 on the machine running the suite. No key is configured
+	// here either, which is the point — the local path has no key to read.
+	const { handler } = mount({ config: { localUrl: 'http://127.0.0.1:9' } });
+	const response = await call(handler, makeRequest({ url: '/api/image-studio/local/status' }));
+	const body = parse(response);
+
+	assert.equal(response.statusCode, 200, body.error);
+	assert.equal(body.ok, true, 'the route answered, so its own envelope is ok');
+	assert.equal(body.reachable, false);
+	assert.equal(body.url, 'http://127.0.0.1:9');
+	assert.ok(typeof body.reason === 'string' && body.reason !== '', 'a person must get a reason');
+	assert.match(body.reason, /не отвечает|did not answer/);
+	assert.equal(body.version, undefined, 'nothing is invented about a server that did not answer');
+});
+
 test('state reports the catalogue, the defaults, and whether a key is configured', async () => {
 	const { handler, root } = mount();
 	const response = await call(handler, makeRequest({ url: '/api/image-studio/state' }));

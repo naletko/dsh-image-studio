@@ -149,6 +149,18 @@ window.__ModuleLoader__.load({
 				modelAddPlaceholder: 'fal-ai/qwen-image',
 				modelAddButton: 'Добавить',
 				modelRemove: 'Убрать из списка',
+				// The local provider: a ComfyUI the person runs themselves. The plugin
+				// only connects to it — nothing is downloaded, and no key is involved.
+				provider: 'Провайдер',
+				providerFal: 'fal.ai',
+				providerLocal: 'Локальный ComfyUI',
+				localUrl: 'Адрес ComfyUI',
+				localUrlHint: 'Только локальный адрес: 127.0.0.1, localhost или ::1',
+				localCheck: 'Проверить связь',
+				localChecking: 'Проверяю…',
+				localReachable: 'ComfyUI отвечает',
+				localUnreachable: 'ComfyUI не отвечает на {url}',
+				localUrlInvalid: 'Принят только локальный адрес: 127.0.0.1, localhost или ::1',
 				// The right sidebar card and the media-source switcher.
 				mediaPanel: 'Медиа проекта',
 				mediaPanelHint: 'Галерея, генерация и монтаж проекта в панели справа',
@@ -279,6 +291,18 @@ window.__ModuleLoader__.load({
 				modelAddPlaceholder: 'fal-ai/qwen-image',
 				modelAddButton: 'Add',
 				modelRemove: 'Remove from the list',
+				// The local provider: a ComfyUI the person runs themselves. The plugin
+				// only connects to it — nothing is downloaded, and no key is involved.
+				provider: 'Provider',
+				providerFal: 'fal.ai',
+				providerLocal: 'Local ComfyUI',
+				localUrl: 'ComfyUI address',
+				localUrlHint: 'Loopback only: 127.0.0.1, localhost or ::1',
+				localCheck: 'Check connection',
+				localChecking: 'Checking…',
+				localReachable: 'ComfyUI is answering',
+				localUnreachable: 'ComfyUI is not answering at {url}',
+				localUrlInvalid: 'Only a loopback address is accepted: 127.0.0.1, localhost or ::1',
 				// The right sidebar card and the media-source switcher.
 				mediaPanel: 'Project media',
 				mediaPanelHint: 'The project gallery, generation and montage in the right panel',
@@ -1624,6 +1648,52 @@ window.__ModuleLoader__.load({
 			// Declared last so the hook order above stays what the render tests seed.
 			const upd = useUpdate();
 
+			// The local provider's own state. It comes after `useUpdate` on purpose:
+			// the render suite seeds hook cells by index, and a state added above
+			// `useUpdate` would shift the update hook's cell.
+			const [provider, setProvider] = useState('fal');
+			const [localUrl, setLocalUrl] = useState('');
+			const [localStatus, setLocalStatus] = useState(null);
+			const [localBusy, setLocalBusy] = useState(false);
+
+			// The address is the host's setting; the field follows it until the person
+			// types their own, and a value the host refused never becomes the field's.
+			useEffect(() => {
+				const configured = state && state.config && typeof state.config.localUrl === 'string' ? state.config.localUrl : '';
+				if (configured !== '') setLocalUrl((current) => current || configured);
+			}, [state]);
+
+			/**
+			 * Ask the host to store the address and probe it.
+			 *
+			 * The host validates the address itself, so the answer says which value
+			 * actually stands: something the host refused is reported as such here
+			 * rather than silently kept and used later.
+			 */
+			const checkLocal = async () => {
+				const wanted = localUrl.trim().replace(/\/+$/, '');
+				setLocalBusy(true);
+				setError('');
+				try {
+					const saved = await api('/config', { method: 'POST', body: JSON.stringify({ localUrl: wanted }) });
+					const kept = saved.config && typeof saved.config.localUrl === 'string' ? saved.config.localUrl : '';
+					if (kept.replace(/\/+$/, '') !== wanted) {
+						setLocalStatus(null);
+						setError(dict.localUrlInvalid);
+						return;
+					}
+					setLocalUrl(kept);
+					// A server that is off is not a page error: the answer stays beside
+					// the address field, where the reason is attached to the address.
+					const status = await api('/local/status');
+					setLocalStatus(status);
+				} catch (failure) {
+					setError(failure.message);
+				} finally {
+					setLocalBusy(false);
+				}
+			};
+
 			/** Download a link into the gallery, through the host, and show it at once. */
 			const runImport = async () => {
 				const url = importUrl.trim();
@@ -1685,6 +1755,10 @@ window.__ModuleLoader__.load({
 
 			const catalog = state ? state.catalog : null;			const selectedModel = catalog ? catalog.imageModels.find((entry) => entry.id === model) || catalog.imageModels[0] : null;
 			const keyReady = state ? Boolean(state.credentials && state.credentials.fal && state.credentials.fal.configured) : true;
+			// A local server has no key at all, so the key banner and the generate
+			// button's guard apply to the fal path only.
+			const keyNeeded = provider === 'fal';
+			const localAddress = localUrl || (state && state.config && state.config.localUrl) || '';
 			const busy = job !== null && job.status !== 'done' && job.status !== 'error';
 			const readyItems = job && Array.isArray(job.items) ? job.items.length : 0;
 
@@ -1699,12 +1773,15 @@ window.__ModuleLoader__.load({
 					const body = await api('/generate', {
 						method: 'POST',
 						body: JSON.stringify({
+							provider,
 							prompt,
-							model: model || undefined,
+							// The fal catalogue means nothing to a local graph, and a local
+							// server has no key: only the fields the chosen path uses travel.
+							model: provider === 'fal' ? (model || undefined) : undefined,
 							aspect,
 							count,
-							quality: quality || undefined,
-							resolution: resolution || undefined,
+							quality: provider === 'fal' ? (quality || undefined) : undefined,
+							resolution: provider === 'fal' ? (resolution || undefined) : undefined,
 						}),
 					});
 					setJob(body.job);
@@ -1775,7 +1852,7 @@ window.__ModuleLoader__.load({
 					})
 					: null,
 
-				!keyReady && state
+				!keyReady && keyNeeded && state
 					? h('div', { className: 'dsh-is-banner dsh-is-banner-error' },
 						h('span', null, `${dict.noKey}. ${dict.noKeyHint}`))
 					: null,
@@ -1801,7 +1878,21 @@ window.__ModuleLoader__.load({
 						},
 					}),
 					h('div', { className: 'dsh-is-controls' },
-						catalog ? h('span', { className: 'dsh-is-field' }, dict.model,
+						catalog
+							? h('span', { className: 'dsh-is-field' }, dict.provider,
+								h('span', { style: { display: 'flex', gap: '6px' } },
+									h('button', {
+										className: 'dsh-is-chip',
+										'aria-pressed': provider === 'fal',
+										onClick: () => setProvider('fal'),
+									}, dict.providerFal),
+									h('button', {
+										className: 'dsh-is-chip',
+										'aria-pressed': provider === 'local',
+										onClick: () => setProvider('local'),
+									}, dict.providerLocal)))
+							: null,
+						catalog && provider === 'fal' ? h('span', { className: 'dsh-is-field' }, dict.model,
 							h('select', { value: model, onChange: (event) => setModel(event.target.value) },
 								catalog.imageModels.map((entry) => h('option', { key: entry.id, value: entry.id }, entry.custom ? `${entry.label} ${dict.modelCustom}` : entry.label))),
 							h('button', {
@@ -1816,12 +1907,12 @@ window.__ModuleLoader__.load({
 						h('span', { className: 'dsh-is-field' }, dict.count,
 							h('select', { value: String(count), onChange: (event) => setCount(Number(event.target.value)) },
 								[1, 2, 3, 4, 6, 8].map((value) => h('option', { key: value, value: String(value) }, String(value))))),
-						selectedModel && selectedModel.qualities.length > 0
+						selectedModel && provider === 'fal' && selectedModel.qualities.length > 0
 							? h('span', { className: 'dsh-is-field' }, dict.quality,
 								h('select', { value: quality, onChange: (event) => setQuality(event.target.value) },
 									['', ...selectedModel.qualities].map((value) => h('option', { key: value || 'auto', value }, value || 'auto'))))
 							: null,
-						selectedModel && selectedModel.resolutions.length > 0
+						selectedModel && provider === 'fal' && selectedModel.resolutions.length > 0
 							? h('span', { className: 'dsh-is-field' }, dict.resolution,
 								h('select', { value: resolution, onChange: (event) => setResolution(event.target.value) },
 									['', ...selectedModel.resolutions].map((value) => h('option', { key: value || 'default', value }, value || 'default'))))
@@ -1837,9 +1928,38 @@ window.__ModuleLoader__.load({
 							: null,
 						h('button', {
 							className: 'dsh-is-button dsh-is-button-primary',
-							disabled: busy || !keyReady,
+							disabled: busy || (keyNeeded && !keyReady),
 							onClick: () => void generate(),
 						}, busy ? dict.generateMore : dict.generate))),
+
+				// The local provider's own row: the address, the one control that proves
+				// whether anything is listening there, and that answer verbatim.
+				catalog && provider === 'local'
+					? h('div', { className: 'dsh-is-chips' },
+						h('span', { className: 'dsh-is-field' }, dict.localUrl,
+							h('input', {
+								className: 'dsh-is-search',
+								type: 'text',
+								value: localUrl,
+								placeholder: dict.localUrlHint,
+								title: dict.localUrlHint,
+								style: { flex: '1 1 260px' },
+								onChange: (event) => setLocalUrl(event.target.value),
+								onKeyDown: (event) => { if (event.key === 'Enter') void checkLocal(); },
+							})),
+						h('button', {
+							className: 'dsh-is-button',
+							disabled: localBusy || localUrl.trim() === '',
+							onClick: () => void checkLocal(),
+						}, localBusy ? dict.localChecking : dict.localCheck),
+						localStatus
+							? h('span', {
+								className: localStatus.reachable === true ? 'dsh-is-library-ok' : 'dsh-is-banner-error',
+							}, localStatus.reachable === true
+								? `${dict.localReachable}${localStatus.version ? ` · v${localStatus.version}` : ''}${localStatus.device ? ` · ${localStatus.device}` : ''}${typeof localStatus.vram === 'number' ? ` · ${Math.round(localStatus.vram / 1024 / 1024 / 1024)} GB VRAM` : ''}`
+								: dict.localUnreachable.replace('{url}', localStatus.url || localAddress))
+							: null)
+					: null,
 
 				h('div', { className: 'dsh-is-tabs', role: 'tablist' },
 					h('button', { className: 'dsh-is-tab', role: 'tab', 'aria-selected': tab === 'gallery', onClick: () => setTab('gallery') }, dict.tabGallery),

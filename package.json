@@ -34,6 +34,7 @@
     "compatibility.json",
     "AGENTS.md",
     "lib/*.js",
+    "workflow/*.json",
     "locale/*.json",
     "README.md",
     "README.ru.md",
@@ -93,7 +94,7 @@
     }
   },
   "scripts": {
-    "test": "node --test test/*.test.mjs",
-    "check": "node --check index.js && node --check client.js && node --check lib/catalog.js && node --check lib/fal.js && node --check lib/gallery.js && node --check lib/library.js && node --check lib/montage.js && node --check lib/update.js"
+    "test": "node test/local-check.mjs && node test/host-check.mjs && node --test test/*.test.mjs",
+    "check": "node --check index.js && node --check client.js && node --check lib/catalog.js && node --check lib/fal.js && node --check lib/gallery.js && node --check lib/library.js && node --check lib/local.js && node --check lib/montage.js && node --check lib/update.js"
   }
 }

@@ -15,7 +15,8 @@
  *   POST /credentials                    store or clear the fal key (write-only)
  *   POST /config                         non-secret defaults, including the library source
  *   POST /gitignore                      add `dsh-media/` to the chosen project's .gitignore
- *   POST /generate                       queue a text-to-image job
+ *   GET  /local/status                   whether the configured ComfyUI answers
+ *   POST /generate                       queue a text-to-image job (fal or local)
  *   POST /video                          queue an image-to-video (Kling) job
  *   GET  /job?id=                        job progress and results
  *   POST /favorite, POST /delete         gallery housekeeping
@@ -27,10 +28,16 @@
  * A generation is submitted to fal's queue and polled by a background task, so a
  * request never blocks on rendering and the page can be closed and reopened
  * while the images are still coming.
+ *
+ * `POST /generate` also accepts `provider: "local"`, which runs the person's own
+ * already-running ComfyUI instead of fal. That path downloads nothing, needs no
+ * key, and talks only to the loopback address validated in `pickConfig` — the
+ * client for it lives in `lib/local.js`.
  */
 
 import fs from 'node:fs';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 import {
 	ASPECTS,
@@ -84,6 +91,16 @@ import {
 	sanitizeLibrarySubdir,
 	workspaceGitState,
 } from './lib/library.js';
+import {
+	DEFAULT_LOCAL_STEPS,
+	DEFAULT_LOCAL_URL,
+	checkServer,
+	generateLocalImages,
+	isLocalComfyUrl,
+	isWorkflowFile,
+	localModelId,
+	normalizeLocalUrl,
+} from './lib/local.js';
 import { attachImageGenerateTool, generateImages } from './lib/tool.js';
 
 // The plan is deliberately narrow: `webServer` for the HTTP surface, and
@@ -108,6 +125,14 @@ const MAX_JOBS = 100;
 /** How many endpoints of the user's own the model picker remembers. */
 const MAX_CUSTOM_MODELS = 40;
 
+/**
+ * The workflow template shipped with the plugin.
+ *
+ * It is an API-format ComfyUI graph whose model file names are placeholders, so
+ * the plugin never claims a weight file it does not ship — see `lib/local.js`.
+ */
+const SHIPPED_WORKFLOW = fileURLToPath(new URL('./workflow/qwen-image.json', import.meta.url));
+
 /** Defaults for everything the profile patch may override. */
 const DEFAULTS = {
 	falKeyRef: DEFAULT_FAL_KEY_REF,
@@ -123,6 +148,17 @@ const DEFAULTS = {
 	librarySource: 'studio',
 	libraryWorkspace: '',
 	librarySubdir: '',
+	// The local provider: where the person's ComfyUI listens, which graph to run,
+	// and which weight files the graph's placeholders stand for. Nothing here is
+	// downloaded, and nothing leaves loopback.
+	provider: 'fal',
+	localUrl: DEFAULT_LOCAL_URL,
+	localWorkflow: SHIPPED_WORKFLOW,
+	localModel: '',
+	localClip: '',
+	localVae: '',
+	localSteps: DEFAULT_LOCAL_STEPS,
+	localTimeoutMs: 300000,
 };
 
 /**
@@ -452,6 +488,43 @@ export function apply(ctx, config) {
 	};
 
 	/**
+	 * Run one local text-to-image job against the person's own ComfyUI.
+	 *
+	 * The whole path lives in `lib/local.js` — template, queue, history, `/view` —
+	 * and the bytes land in the same gallery through the same `lib/gallery.js`
+	 * calls the fal path uses, so a local result is browsable, favouritable and
+	 * deletable exactly like any other. No key is read here: a local server has
+	 * no such thing.
+	 *
+	 * @param job - the job record.
+	 * @param root - the library root the request resolved.
+	 */
+	const runLocalImageJob = async (job, root) => {
+		try {
+			const result = await generateLocalImages({ live, resolveRoot: () => root }, {
+				prompt: job.request.prompt,
+				aspect: job.request.aspect,
+				count: job.request.count,
+				seed: job.request.seed,
+			}, {
+				onStart: () => { job.status = 'running'; },
+				onProgress: (progress) => {
+					job.providerStatus = progress.status;
+					job.requestId = progress.requestId;
+				},
+			});
+
+			job.request.model = result.model.id;
+			job.request.count = result.count;
+			job.items = result.entries;
+			job.status = 'done';
+		} catch (error) {
+			job.status = 'error';
+			job.error = describeError(error);
+		}
+	};
+
+	/**
 	 * Run one video job. An image-to-video endpoint receives the chosen still as
 	 * a data URI, which is how fal accepts a local file without an upload step.
 	 *
@@ -619,6 +692,14 @@ export function apply(ctx, config) {
 							defaultAspect: live.defaultAspect,
 							defaultCount: live.defaultCount,
 							customModels: Array.isArray(live.customModels) ? live.customModels : [],
+							provider: live.provider,
+							localUrl: live.localUrl,
+							localWorkflow: live.localWorkflow,
+							localModel: live.localModel,
+							localClip: live.localClip,
+							localVae: live.localVae,
+							localSteps: live.localSteps,
+							localTimeoutMs: live.localTimeoutMs,
 						},
 						catalog: {
 							imageModels: [...IMAGE_MODELS, ...customModelEntries(live)],
@@ -637,6 +718,16 @@ export function apply(ctx, config) {
 						tools: { ffmpeg: await ffmpegInfo() },
 						stats: summarize(index.items),
 					});
+					return;
+				}
+
+				if (route === '/local/status' && method === 'GET') {
+					// The probe never throws and never blocks for long: a machine
+					// with ComfyUI switched off answers `reachable: false` with a
+					// reason, and the page keeps its fal path untouched. `ok` here
+					// means "this route answered", not "the server is up".
+					const status = await checkServer(live.localUrl);
+					sendJson(res, 200, { ok: true, ...status });
 					return;
 				}
 
@@ -730,6 +821,20 @@ export function apply(ctx, config) {
 						libraryWorkspace: body.libraryWorkspace,
 						librarySubdir: body.librarySubdir,
 					}));
+					// The local provider's keys are validated the same way. An address
+					// that is not http(s) on loopback is dropped rather than stored,
+					// and the answer below shows the value that actually stands — which
+					// is how the page can tell the person their URL was refused.
+					Object.assign(live, pickConfig({
+						provider: body.provider,
+						localUrl: body.localUrl,
+						localWorkflow: body.localWorkflow,
+						localModel: body.localModel,
+						localClip: body.localClip,
+						localVae: body.localVae,
+						localSteps: body.localSteps,
+						localTimeoutMs: body.localTimeoutMs,
+					}));
 					writeStoredConfig(settingsRoot, pickConfig(live));
 					sendJson(res, 200, {
 						ok: true,
@@ -742,6 +847,14 @@ export function apply(ctx, config) {
 							librarySource: live.librarySource,
 							libraryWorkspace: live.libraryWorkspace,
 							librarySubdir: live.librarySubdir,
+							provider: live.provider,
+							localUrl: live.localUrl,
+							localWorkflow: live.localWorkflow,
+							localModel: live.localModel,
+							localClip: live.localClip,
+							localVae: live.localVae,
+							localSteps: live.localSteps,
+							localTimeoutMs: live.localTimeoutMs,
 						},
 					});
 					return;
@@ -815,6 +928,34 @@ export function apply(ctx, config) {
 						sendJson(res, 400, { ok: false, error: 'Write a prompt first' });
 						return;
 					}
+					const aspect = isKnownAspect(body.aspect) ? body.aspect : live.defaultAspect;
+					const seed = Number.isInteger(body.seed) ? body.seed : undefined;
+
+					// The local provider runs the person's own graph on the person's
+					// own server: there is no fal endpoint to resolve, no key to read,
+					// and the model file comes from the row configuration. Anything
+					// other than an explicit `local` stays on the fal path.
+					if (body.provider === 'local') {
+						const job = createJob({
+							id: newJobId(),
+							kind: 'image',
+							status: 'queued',
+							createdAt: Date.now(),
+							request: {
+								provider: 'local',
+								prompt,
+								model: localModelId(live.localModel),
+								aspect,
+								count: clampCount(body.count, 1),
+								seed,
+							},
+							items: [],
+						});
+						void runLocalImageJob(job, root);
+						sendJson(res, 202, { ok: true, job: publicJob(job) });
+						return;
+					}
+
 					const model = resolveModel(body.model ?? live.defaultModel, 'image');
 					if (model === undefined) {
 						sendJson(res, 400, { ok: false, error: 'Unknown image model' });
@@ -826,13 +967,14 @@ export function apply(ctx, config) {
 						status: 'queued',
 						createdAt: Date.now(),
 						request: {
+							provider: 'fal',
 							prompt,
 							model: model.id,
-							aspect: isKnownAspect(body.aspect) ? body.aspect : live.defaultAspect,
+							aspect,
 							count: clampCount(body.count, model.defaultCount ?? live.defaultCount),
 							quality: typeof body.quality === 'string' ? body.quality : undefined,
 							resolution: typeof body.resolution === 'string' ? body.resolution : undefined,
-							seed: Number.isInteger(body.seed) ? body.seed : undefined,
+							seed,
 						},
 						items: [],
 					});
@@ -1107,6 +1249,17 @@ export function pickConfig(source) {
 	if (isUsableWorkspace(source.libraryWorkspace)) out.libraryWorkspace = path.resolve(source.libraryWorkspace.trim());
 	const subdir = sanitizeLibrarySubdir(source.librarySubdir);
 	if (subdir !== undefined) out.librarySubdir = subdir;
+	// The local provider is validated as strictly as the key reference: an address
+	// that is not http(s) on loopback, or a template that is not an existing file,
+	// is refused outright instead of being stored and tried later.
+	if (source.provider === 'fal' || source.provider === 'local') out.provider = source.provider;
+	if (isLocalComfyUrl(source.localUrl)) out.localUrl = normalizeLocalUrl(source.localUrl);
+	if (isWorkflowFile(source.localWorkflow)) out.localWorkflow = path.resolve(source.localWorkflow.trim());
+	if (typeof source.localModel === 'string') out.localModel = source.localModel.trim();
+	if (typeof source.localClip === 'string') out.localClip = source.localClip.trim();
+	if (typeof source.localVae === 'string') out.localVae = source.localVae.trim();
+	if (Number.isFinite(source.localSteps) && source.localSteps > 0) out.localSteps = Math.min(150, Math.round(source.localSteps));
+	if (Number.isFinite(source.localTimeoutMs) && source.localTimeoutMs > 0) out.localTimeoutMs = source.localTimeoutMs;
 	return out;
 }
 
