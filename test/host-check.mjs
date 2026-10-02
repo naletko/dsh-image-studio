@@ -591,6 +591,53 @@ test('profile configuration is validated, never trusted', () => {
 	);
 });
 
+test('the import route refuses links into the local network', async () => {
+	const { handler } = mount();
+	const hostile = [
+		'file:///etc/passwd',
+		'http://localhost:8188/pic.png',
+		'http://127.0.0.1/pic.png',
+		'http://192.168.1.5/pic.png',
+		'http://10.0.0.7/pic.png',
+		'http://172.16.4.4/pic.png',
+		'http://169.254.169.254/latest/meta-data',
+		'http://router.local/pic.png',
+		'just some text',
+	];
+	for (const url of hostile) {
+		const response = await call(handler, makeRequest({
+			url: '/api/image-studio/import',
+			method: 'POST',
+			body: { url },
+		}));
+		assert.equal(response.statusCode, 400, `${url} must be refused`);
+	}
+});
+
+test('an import downloads a public link into the gallery', async () => {
+	const { handler } = mount();
+	const realFetch = globalThis.fetch;
+	globalThis.fetch = async () => new Response(PNG, { status: 200, headers: { 'content-type': 'image/png' } });
+	try {
+		const body = parse(await call(handler, makeRequest({
+			url: '/api/image-studio/import',
+			method: 'POST',
+			body: { url: 'https://cdn.example.com/pic.png' },
+		})));
+		assert.equal(body.ok, true);
+		assert.equal(body.item.kind, 'image');
+		assert.equal(body.item.modelLabel, 'Import');
+
+		const gallery = parse(await call(handler, makeRequest({ url: '/api/image-studio/gallery' })));
+		assert.equal(gallery.items.length, 1);
+
+		const media = await call(handler, makeRequest({ url: `/api/image-studio/file?id=${body.item.id}` }));
+		assert.deepEqual(media.raw, PNG);
+	} finally {
+		globalThis.fetch = realFetch;
+	}
+});
+
 test('a public entry never carries the provider URL', () => {
 	const entry = publicEntry({ id: 'a'.repeat(24), ext: 'png', kind: 'image', mime: 'image/png', sourceUrl: 'https://cdn/secret' });
 	assert.equal('sourceUrl' in entry, false);

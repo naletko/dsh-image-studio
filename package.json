@@ -1,6 +1,6 @@
 {
   "name": "dsh-image-studio",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "description": "An Images workspace for DeepSeek Harness: one page to generate with fal.ai, browse every result, compare candidates, and animate the winner with Kling image-to-video.",
   "keywords": [
     "dsh-plugin",

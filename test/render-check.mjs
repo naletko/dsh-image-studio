@@ -290,12 +290,13 @@ test('the settings card summarises itself and renders its fields', () => {
 
 test('the page offers the update next to its counters when the branch is newer', () => {
 	const { components, render, textOf, findAll, seeds, react } = loadHarness();
-	// Cell 18 is where `useUpdate`'s first state lands after the page's own hooks;
-	// the seeding is positional by design, so a hook added above it fails here.
+	// Cell 21 is where `useUpdate`'s first state lands after the page's own hooks
+	// (the import-by-link state sits between them); the seeding is positional by
+	// design, so a hook added above it fails here.
 	seeds.set(components.ImagesPanel, {
 		0: loadedState,
 		1: [imageItem],
-		18: { enabled: true, current: '0.1.2', latest: '9.9.9', sha: 'ccccccc', updateAvailable: true, manager: true, notes: [] },
+		21: { enabled: true, current: '0.1.2', latest: '9.9.9', sha: 'ccccccc', updateAvailable: true, manager: true, notes: [] },
 	});
 	const tree = render(react.createElement(components.ImagesPanel, {}));
 	const text = textOf(tree);

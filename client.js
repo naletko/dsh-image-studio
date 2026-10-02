@@ -125,6 +125,13 @@ window.__ModuleLoader__.load({
 				updatesDisabled: 'Проверка обновлений выключена в настройках строки',
 				updatesNotes: 'Что нового',
 				updatesReload: 'Обновить страницу',
+				importLink: 'Импорт по ссылке',
+				importHint: 'Скачать картинку или видео по прямой ссылке в эту же галерею',
+				importPlaceholder: 'https://… прямая ссылка на файл',
+				importButton: 'Скачать',
+				importing: 'Скачиваю…',
+				importDone: 'Файл добавлен в галерею',
+				cancel: 'Отмена',
 			},
 			en: {
 				panel: 'Images',
@@ -223,6 +230,13 @@ window.__ModuleLoader__.load({
 				updatesDisabled: 'Update checking is switched off in the row configuration',
 				updatesNotes: "What's new",
 				updatesReload: 'Reload the page',
+				importLink: 'Import by link',
+				importHint: 'Download an image or video from a direct link into this same gallery',
+				importPlaceholder: 'https://… direct link to the file',
+				importButton: 'Download',
+				importing: 'Downloading…',
+				importDone: 'The file is in the gallery',
+				cancel: 'Cancel',
 			},
 		};
 
@@ -1292,6 +1306,11 @@ window.__ModuleLoader__.load({
 			const [error, setError] = useState('');
 			const [notice, setNotice] = useState('');
 			const [preview, setPreview] = useState(null);
+			// Importing by link: paste a URL from anywhere and the host downloads it
+			// into the same gallery, so a picture made elsewhere can be compared here.
+			const [importUrl, setImportUrl] = useState('');
+			const [importOpen, setImportOpen] = useState(false);
+			const [importing, setImporting] = useState(false);
 			const promptRef = useRef(null);
 
 			const refreshGallery = useCallback(async () => {
@@ -1351,8 +1370,26 @@ window.__ModuleLoader__.load({
 			// Declared last so the hook order above stays what the render tests seed.
 			const upd = useUpdate();
 
-			const catalog = state ? state.catalog : null;
-			const selectedModel = catalog ? catalog.imageModels.find((entry) => entry.id === model) || catalog.imageModels[0] : null;
+			/** Download a link into the gallery, through the host, and show it at once. */
+			const runImport = async () => {
+				const url = importUrl.trim();
+				if (url === '') return;
+				setImporting(true);
+				setError('');
+				try {
+					await api('/import', { method: 'POST', body: JSON.stringify({ url }) });
+					setImportUrl('');
+					setImportOpen(false);
+					setNotice(dict.importDone);
+					await refreshGallery();
+				} catch (failure) {
+					setError(failure.message);
+				} finally {
+					setImporting(false);
+				}
+			};
+
+			const catalog = state ? state.catalog : null;			const selectedModel = catalog ? catalog.imageModels.find((entry) => entry.id === model) || catalog.imageModels[0] : null;
 			const keyReady = state ? Boolean(state.credentials && state.credentials.fal && state.credentials.fal.configured) : true;
 			const busy = job !== null && job.status !== 'done' && job.status !== 'error';
 			const readyItems = job && Array.isArray(job.items) ? job.items.length : 0;
@@ -1509,6 +1546,12 @@ window.__ModuleLoader__.load({
 								onClick: () => setFilter(value),
 							}, label)),
 						h('div', { className: 'dsh-is-spacer' }),
+						h('button', {
+							className: 'dsh-is-chip',
+							'aria-pressed': importOpen,
+							title: dict.importHint,
+							onClick: () => setImportOpen(!importOpen),
+						}, dict.importLink),
 						h('input', {
 							className: 'dsh-is-search',
 							type: 'search',
@@ -1516,6 +1559,28 @@ window.__ModuleLoader__.load({
 							placeholder: dict.searchPlaceholder,
 							onChange: (event) => setQuery(event.target.value),
 						}))
+					: null,
+
+				tab === 'gallery' && importOpen
+					? h('div', { className: 'dsh-is-chips' },
+						h('input', {
+							className: 'dsh-is-search',
+							type: 'url',
+							value: importUrl,
+							placeholder: dict.importPlaceholder,
+							style: { flex: '1 1 320px' },
+							onChange: (event) => setImportUrl(event.target.value),
+							onKeyDown: (event) => { if (event.key === 'Enter') void runImport(); },
+						}),
+						h('button', {
+							className: 'dsh-is-button dsh-is-button-primary',
+							disabled: importing || importUrl.trim() === '',
+							onClick: () => void runImport(),
+						}, importing ? dict.importing : dict.importButton),
+						h('button', {
+							className: 'dsh-is-button',
+							onClick: () => { setImportOpen(false); setImportUrl(''); },
+						}, dict.cancel))
 					: null,
 
 				h('div', { className: 'dsh-is-scroll' },

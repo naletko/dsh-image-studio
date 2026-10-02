@@ -816,6 +816,32 @@ export function apply(ctx, config) {
 					return;
 				}
 
+				if (route === '/import' && method === 'POST') {
+					const body = await readBody(req);
+					const url = String(body.url ?? '').trim();
+					try {
+						assertPublicMediaUrl(url);
+					} catch (error) {
+						sendJson(res, 400, { ok: false, error: describeError(error) });
+						return;
+					}
+					const fetched = await fetchBytes(url);
+					const looksVideo = String(fetched.contentType ?? '').startsWith('video/')
+						|| /\.(mp4|webm|mov)(\?|$)/i.test(url);
+					const entry = storeMedia({
+						createdAt: Date.now(),
+						index: 0,
+						kind: looksVideo ? 'video' : 'image',
+						prompt: url,
+						model: 'import',
+						modelLabel: 'Import',
+						sourceUrl: url,
+					}, fetched.bytes, fetched.contentType, looksVideo ? 'mp4' : 'png');
+					addEntries(root, [entry]);
+					sendJson(res, 200, { ok: true, item: publicEntry(entry) });
+					return;
+				}
+
 				sendJson(res, 404, { ok: false, error: `Unknown route ${route}` });
 			} catch (error) {
 				sendJson(res, 500, { ok: false, error: error instanceof Error ? error.message : String(error) });
@@ -961,8 +987,43 @@ function describeError(error) {
 }
 
 /**
- * Keep the readable part of a plugin-manager result.
+ * Whether a URL may be fetched on the user's behalf.
  *
+ * The import route downloads a link server-side, so it must not be usable as a
+ * probe into the local network: only http(s), and only hosts that are not
+ * loopback, private, link-local, or otherwise local.
+ *
+ * @param value - the URL a caller pasted.
+ * @throws when the URL is not one a plugin should fetch.
+ */
+export function assertPublicMediaUrl(value) {
+	let parsed;
+	try {
+		parsed = new URL(String(value));
+	} catch {
+		throw new Error('That does not look like a link');
+	}
+	if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+		throw new Error('Only http and https links can be imported');
+	}
+	const host = parsed.hostname.toLowerCase().replace(/^\[|\]$/g, '');
+	const isIpv4 = /^\d{1,3}(\.\d{1,3}){3}$/.test(host);
+	const blockedName = host === 'localhost' || host.endsWith('.localhost') || host.endsWith('.local') || host.endsWith('.internal');
+	const blockedIpv6 = host === '::1' || host.startsWith('fc') || host.startsWith('fd') || host.startsWith('fe80');
+	let blockedIpv4 = false;
+	if (isIpv4) {
+		const [a, b] = host.split('.').map((part) => Number.parseInt(part, 10));
+		blockedIpv4 = a === 0 || a === 10 || a === 127 || (a === 169 && b === 254)
+			|| (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168);
+	}
+	if (blockedName || blockedIpv6 || blockedIpv4) {
+		throw new Error('Only links from the public internet can be imported');
+	}
+	return parsed;
+}
+
+/**
+ * Keep the readable part of a plugin-manager result. *
  * The manager's own object is large and may hold references the HTTP layer
  * cannot serialize; the page only needs to know how the attempt ended.
  *
