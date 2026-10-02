@@ -121,6 +121,31 @@ dsh plugin --profile web remove dsh-image-studio
 dsh plugin --profile web add github:naletko/dsh-image-studio
 ```
 
+## Generate from the conversation
+
+The plugin registers an `image_generate` tool, so the model can generate into the same library the page shows — the
+shared studio or the current project's media, depending on the chosen source. Parameters: `prompt` (required), `aspect`
+(`1:1`, `4:3`, `3:4`, `16:9`, `9:16`), `count`, and `model` (any fal slug; defaults to the configured model). The
+result carries a summary, the model, the library root, a markdown link, and every saved file with its size.
+
+Failures — no key, 401/404, a timeout, an empty answer, a slug that is not `owner/name`, a write error — are thrown as
+short human sentences that never contain the key or this machine's paths. The tool is registered only when the
+composition mounts the tools service; without it the plugin and the page keep working.
+
+## Generate on a local ComfyUI
+
+Generation can also run on a ComfyUI the person started themselves. **The plugin never downloads anything** — no models,
+no workflows, no custom nodes — it only talks to a server that is already running, by default
+`http://127.0.0.1:8188`. Only a local address is accepted (`127.0.0.1`, `localhost`, `::1`), checked when the setting is
+saved and again before every request, so a hand-edited profile cannot point it off the machine.
+
+The page edits the address and offers a connection test; the workflow template and the model file names
+(`localWorkflow`, `localModel`, `localClip`, `localVae`, `localSteps`) are row-configuration settings. The bundled
+`workflow/qwen-image.json` is a plain ComfyUI API graph with `{{prompt}}`, `{{width}}`, `{{height}}`, `{{seed}}`,
+`{{steps}}`, `{{model}}`, `{{clip}}`, `{{vae}}` placeholders; on a GGUF build the loader node becomes
+`UnetLoaderGGUF`. That graph has not been verified against a live server, and a model path is filled from settings — an
+empty value means ComfyUI reports its own validation error, which is shown as it came. `count > 1` runs sequentially
+with different seeds, results land in the same gallery as `local:<model file>`, and no fal key is read on this path.
 ## Uninstall
 
 ```sh
