@@ -1,7 +1,7 @@
 # Agent installation guide
 
 Use this guide when someone asks you to install, update, verify, or remove `dsh-image-studio` in a DeepSeek Harness
-profile. Current release: **dsh-image-studio@0.1.3**, qualified against DSH cores **0.2.0-rc.2** and **0.2.0-rc.1**.
+profile. Current release: **dsh-image-studio@0.2.0**, qualified against DSH cores **0.2.0-rc.2** and **0.2.0-rc.1**.
 
 ## Safety
 

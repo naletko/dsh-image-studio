@@ -132,6 +132,13 @@ window.__ModuleLoader__.load({
 				importing: 'Скачиваю…',
 				importDone: 'Файл добавлен в галерею',
 				cancel: 'Отмена',
+				saving: 'Сохраняю…',
+				modelCustom: '· своя',
+				modelAdd: '＋ Своя модель',
+				modelAddHint: 'Любой endpoint с fal.ai по слагу — например fal-ai/qwen-image',
+				modelAddPlaceholder: 'fal-ai/qwen-image',
+				modelAddButton: 'Добавить',
+				modelRemove: 'Убрать из списка',
 			},
 			en: {
 				panel: 'Images',
@@ -237,6 +244,13 @@ window.__ModuleLoader__.load({
 				importing: 'Downloading…',
 				importDone: 'The file is in the gallery',
 				cancel: 'Cancel',
+				saving: 'Saving…',
+				modelCustom: '· custom',
+				modelAdd: '＋ Own model',
+				modelAddHint: 'Any fal.ai endpoint by its slug — for example fal-ai/qwen-image',
+				modelAddPlaceholder: 'fal-ai/qwen-image',
+				modelAddButton: 'Add',
+				modelRemove: 'Remove from the list',
 			},
 		};
 
@@ -1311,6 +1325,11 @@ window.__ModuleLoader__.load({
 			const [importUrl, setImportUrl] = useState('');
 			const [importOpen, setImportOpen] = useState(false);
 			const [importing, setImporting] = useState(false);
+			// The model picker: three built-ins are a starting point, not a limit —
+			// any fal endpoint can be added by its slug and stays in the list.
+			const [modelOpen, setModelOpen] = useState(false);
+			const [modelDraft, setModelDraft] = useState('');
+			const [modelBusy, setModelBusy] = useState(false);
 			const promptRef = useRef(null);
 
 			const refreshGallery = useCallback(async () => {
@@ -1386,6 +1405,46 @@ window.__ModuleLoader__.load({
 					setError(failure.message);
 				} finally {
 					setImporting(false);
+				}
+			};
+
+			/** Remember a model of the user's own, so the picker can offer it later. */
+			const addModel = async () => {
+				const id = modelDraft.trim();
+				if (id === '') return;
+				const existing = state && state.config.customModels ? state.config.customModels : [];
+				await saveModels([...existing, id], id);
+			};
+
+			/** Drop one remembered endpoint. */
+			const removeModel = async (id) => {
+				const existing = state && state.config.customModels ? state.config.customModels : [];
+				const next = existing.filter((entry) => entry !== id);
+				await saveModels(next, next.includes(model) ? next[0] ?? '' : model);
+			};
+
+			/**
+			 * Write the remembered list, and select what was just added.
+			 *
+			 * The host answers with the list it actually kept, so a rejected slug
+			 * (not an `owner/name` pair) simply does not appear.
+			 */
+			const saveModels = async (list, select) => {
+				setModelBusy(true);
+				setError('');
+				try {
+					const body = await api('/config', {
+						method: 'POST',
+						body: JSON.stringify({ customModels: list, defaultModel: select === '' ? undefined : select }),
+					});
+					setState((current) => (current ? { ...current, config: body.config } : current));
+					await refreshState();
+					if (select !== '') setModel(select);
+					setModelDraft('');
+				} catch (failure) {
+					setError(failure.message);
+				} finally {
+					setModelBusy(false);
 				}
 			};
 
@@ -1499,7 +1558,13 @@ window.__ModuleLoader__.load({
 					h('div', { className: 'dsh-is-controls' },
 						catalog ? h('span', { className: 'dsh-is-field' }, dict.model,
 							h('select', { value: model, onChange: (event) => setModel(event.target.value) },
-								catalog.imageModels.map((entry) => h('option', { key: entry.id, value: entry.id }, entry.label)))) : null,
+								catalog.imageModels.map((entry) => h('option', { key: entry.id, value: entry.id }, entry.custom ? `${entry.label} ${dict.modelCustom}` : entry.label))),
+							h('button', {
+								className: 'dsh-is-chip',
+								'aria-pressed': modelOpen,
+								title: dict.modelAddHint,
+								onClick: () => setModelOpen(!modelOpen),
+							}, dict.modelAdd)) : null,
 						catalog ? h('span', { className: 'dsh-is-field' }, dict.aspect,
 							h('select', { value: aspect, onChange: (event) => setAspect(event.target.value) },
 								catalog.aspects.map((entry) => h('option', { key: entry, value: entry }, entry)))) : null,
@@ -1581,6 +1646,30 @@ window.__ModuleLoader__.load({
 							className: 'dsh-is-button',
 							onClick: () => { setImportOpen(false); setImportUrl(''); },
 						}, dict.cancel))
+					: null,
+
+				modelOpen
+					? h('div', { className: 'dsh-is-chips' },
+						h('input', {
+							className: 'dsh-is-search',
+							type: 'text',
+							value: modelDraft,
+							placeholder: dict.modelAddPlaceholder,
+							style: { flex: '1 1 280px' },
+							onChange: (event) => setModelDraft(event.target.value),
+							onKeyDown: (event) => { if (event.key === 'Enter') void addModel(); },
+						}),
+						h('button', {
+							className: 'dsh-is-button dsh-is-button-primary',
+							disabled: modelBusy || modelDraft.trim() === '',
+							onClick: () => void addModel(),
+						}, modelBusy ? dict.saving : dict.modelAddButton),
+						(state && state.config.customModels ? state.config.customModels : []).map((id) => h('button', {
+							key: id,
+							className: 'dsh-is-chip',
+							title: dict.modelRemove,
+							onClick: () => void removeModel(id),
+						}, `${id} ✕`)))
 					: null,
 
 				h('div', { className: 'dsh-is-scroll' },

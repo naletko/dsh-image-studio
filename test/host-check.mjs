@@ -638,6 +638,28 @@ test('an import downloads a public link into the gallery', async () => {
 	}
 });
 
+test('a model of the user\'s own is remembered and offered', async () => {
+	const { handler } = mount();
+	const saved = parse(await call(handler, makeRequest({
+		url: '/api/image-studio/config',
+		method: 'POST',
+		body: {
+			// One usable slug, one bare word, and one that is already a built-in.
+			customModels: ['fal-ai/qwen-image', 'not a slug', 'fal-ai/flux-2/klein/9b'],
+			defaultModel: 'fal-ai/qwen-image',
+		},
+	})));
+	assert.deepEqual(saved.config.customModels, ['fal-ai/qwen-image']);
+	assert.equal(saved.config.defaultModel, 'fal-ai/qwen-image');
+
+	const state = parse(await call(handler, makeRequest({ url: '/api/image-studio/state' })));
+	const entry = state.catalog.imageModels.find((model) => model.id === 'fal-ai/qwen-image');
+	assert.ok(entry, 'the custom endpoint is offered by the picker');
+	assert.equal(entry.custom, true);
+	assert.equal(state.catalog.imageModels.filter((model) => model.id === 'fal-ai/qwen-image').length, 1);
+	assert.equal(state.catalog.imageModels.length, state.catalog.builtinImageModels.length + 1);
+});
+
 test('a public entry never carries the provider URL', () => {
 	const entry = publicEntry({ id: 'a'.repeat(24), ext: 'png', kind: 'image', mime: 'image/png', sourceUrl: 'https://cdn/secret' });
 	assert.equal('sourceUrl' in entry, false);

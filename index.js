@@ -91,10 +91,14 @@ const MAX_BODY_BYTES = 256 * 1024;
 /** Job records kept in memory; the media itself is on disk. */
 const MAX_JOBS = 100;
 
+/** How many endpoints of the user's own the model picker remembers. */
+const MAX_CUSTOM_MODELS = 40;
+
 /** Defaults for everything the profile patch may override. */
 const DEFAULTS = {
 	falKeyRef: DEFAULT_FAL_KEY_REF,
 	defaultModel: DEFAULT_IMAGE_MODEL,
+	customModels: [],
 	defaultAspect: '1:1',
 	defaultCount: 1,
 	imageTimeoutMs: 240000,
@@ -552,9 +556,11 @@ export function apply(ctx, config) {
 							defaultModel: live.defaultModel,
 							defaultAspect: live.defaultAspect,
 							defaultCount: live.defaultCount,
+							customModels: Array.isArray(live.customModels) ? live.customModels : [],
 						},
 						catalog: {
-							imageModels: IMAGE_MODELS,
+							imageModels: [...IMAGE_MODELS, ...customModelEntries(live)],
+							builtinImageModels: IMAGE_MODELS,
 							videoModels: VIDEO_MODELS,
 							aspects: ASPECTS,
 							durations: VIDEO_DURATIONS,
@@ -630,6 +636,12 @@ export function apply(ctx, config) {
 					}
 					if (typeof body.defaultAspect === 'string' && isKnownAspect(body.defaultAspect)) live.defaultAspect = body.defaultAspect;
 					if (body.defaultCount !== undefined) live.defaultCount = clampCount(body.defaultCount, live.defaultCount);
+					// The list is replaced wholesale: the page sends what should remain,
+					// so adding and removing a model are the same request.
+					if (body.customModels !== undefined) live.customModels = sanitizeCustomModels(body.customModels);
+					if (typeof body.defaultModel === 'string' && live.customModels.includes(body.defaultModel) === false && resolveModel(body.defaultModel, 'image')?.custom === true) {
+						live.customModels = sanitizeCustomModels([...live.customModels, body.defaultModel]);
+					}
 					writeStoredConfig(root, pickConfig(live));
 					sendJson(res, 200, {
 						ok: true,
@@ -638,6 +650,7 @@ export function apply(ctx, config) {
 							defaultModel: live.defaultModel,
 							defaultAspect: live.defaultAspect,
 							defaultCount: live.defaultCount,
+							customModels: Array.isArray(live.customModels) ? live.customModels : [],
 						},
 					});
 					return;
@@ -927,9 +940,49 @@ function summarize(items) {
 }
 
 /**
- * Keep only the configuration keys this plugin owns, and only when they are
- * well formed. A profile patch is edited by hand, so nothing here is trusted.
+ * Keep only usable custom endpoints from an untrusted list.
  *
+ * A custom model is any fal endpoint slug (`owner/name`), so the user can
+ * generate with models this plugin has never heard of. Anything else — a bare
+ * word, a URL, a duplicate of a built-in, or a very long list — is dropped
+ * rather than rejected, so one bad entry never costs the whole list.
+ *
+ * @param value - candidate list from a request or the stored file.
+ * @returns a deduplicated list of at most {@link MAX_CUSTOM_MODELS} slugs.
+ */
+export function sanitizeCustomModels(value) {
+	if (!Array.isArray(value)) return [];
+	const seen = new Set(IMAGE_MODELS.map((entry) => entry.id));
+	const out = [];
+	for (const candidate of value) {
+		const id = typeof candidate === 'string' ? candidate.trim() : '';
+		if (!/^[A-Za-z0-9][\w.-]*\/[A-Za-z0-9][\w.-]*$/.test(id)) continue;
+		if (seen.has(id)) continue;
+		seen.add(id);
+		out.push(id);
+		if (out.length >= MAX_CUSTOM_MODELS) break;
+	}
+	return out;
+}
+
+/**
+ * The catalogue entries for the user's own endpoints.
+ *
+ * They are built through `resolveModel`, so a custom model carries exactly the
+ * flags a built-in one does and flows through generation and the picker
+ * unchanged.
+ *
+ * @param live - the resolved configuration.
+ * @returns catalogue entries, in the order the user added them.
+ */
+function customModelEntries(live) {
+	const list = live !== null && typeof live === 'object' && Array.isArray(live.customModels) ? live.customModels : [];
+	return list.map((id) => resolveModel(id, 'image')).filter((entry) => entry !== undefined);
+}
+
+/**
+ * Keep only the configuration keys this plugin owns, and only when they are
+ * well formed. A profile patch is edited by hand, so nothing here is trusted. *
  * @param source - a config object, or anything else.
  * @returns the accepted subset.
  */
@@ -938,6 +991,7 @@ export function pickConfig(source) {
 	if (source === null || typeof source !== 'object') return out;
 	if (typeof source.falKeyRef === 'string' && /^[A-Za-z_][A-Za-z0-9_]*$/.test(source.falKeyRef)) out.falKeyRef = source.falKeyRef;
 	if (typeof source.defaultModel === 'string') out.defaultModel = source.defaultModel;
+	if (source.customModels !== undefined) out.customModels = sanitizeCustomModels(source.customModels);
 	if (typeof source.defaultAspect === 'string' && IS_ASPECT(source.defaultAspect)) out.defaultAspect = source.defaultAspect;
 	if (source.defaultCount !== undefined) out.defaultCount = clampCount(source.defaultCount, DEFAULTS.defaultCount);
 	if (Number.isFinite(source.imageTimeoutMs)) out.imageTimeoutMs = source.imageTimeoutMs;
