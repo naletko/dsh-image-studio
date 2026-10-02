@@ -1,6 +1,6 @@
 {
   "meta": {
     "title": "Image Studio",
-    "description": "An Images workspace for DeepSeek Harness: generate with fal.ai, browse every result, compare candidates, animate the winner in Kling, and assemble a cut with ffmpeg. By Alex Naletko."
+    "description": "Generate images with fal.ai, keep every result in the shared studio or a project library, animate a still in Kling, and cut a video with ffmpeg. By Alex Naletko."
   }
 }
