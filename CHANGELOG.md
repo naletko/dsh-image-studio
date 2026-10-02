@@ -4,21 +4,29 @@ Notable changes to `dsh-image-studio`, newest first. The version in
 [package.json](package.json) is the one running; [compatibility.json](compatibility.json) lists the DSH cores each
 release was qualified against.
 
-## 0.3.0
+## 0.4.0
 
-- **The gallery can live in a project.** The `librarySource` configuration selects the shared studio
-  (`<DSH_HOME>/image-studio`, the default) or a folder inside a project (`<project>/dsh-media`, with an optional
-  subfolder). The root is resolved per request, so switching needs no restart; a project that no longer exists falls
-  back to the shared studio instead of failing every route. The settings file always stays in the shared studio, and
-  `POST /gitignore` adds `dsh-media/` to a project's `.gitignore` idempotently, only when that folder is a git
-  repository.
-- **The library is switchable from the page.** A **Media source** control in the header picks the shared studio or a
-  project, sets an optional subfolder and shows the folder in use; a project that is a git repository and does not
-  ignore the media folder yet gets an **Add dsh-media to .gitignore** button.
-- **A card in the right panel.** Where the right sidebar exposes a tab registry, **Project media** opens the same page
-  beside the terminal.
-- New host routes: `GET /workspaces` (the project list from the workspace registry), `POST /gitignore`, and a `library`
-  block in `/state` carrying `source`, `workspaces`, `workspace`, `subdir`, `root`, `git`, `ignored`.
+- **The gallery can live in a project.** `librarySource: workspace` puts the media in `<project>/dsh-media[/<subfolder>]`,
+  created on first use, while `config.json` always stays in the shared studio. The root is resolved per request, so
+  switching needs no restart, and a project that no longer exists falls back to the shared studio instead of failing
+  every route.
+- **A library control and a card in the right panel.** The page header switches the source, sets an optional subfolder
+  and shows the folder in use; next to Files, Terminal and Browser, **Project media** opens the same page through the
+  sidebar's right-tab registry (`sidebarRightTabs`). A project that is a git repository and does not ignore the media
+  folder yet gets an **Add dsh-media to .gitignore** button.
+- **`image_generate` for the conversation.** The model can generate into the same library the page reads — `prompt`,
+  `aspect`, `count` and an optional fal `model` — using the same generation code and the same library root. A failure
+  throws a readable error instead of returning a value, and that text never carries the key or this machine's paths.
+- **A local ComfyUI provider.** Generation can run on a server the person already started; the plugin downloads nothing
+  — no models, no workflows, no custom nodes — and accepts only a loopback address, checked on save and again before
+  every request. `GET /local/status` probes the server, `provider: "local"` on `POST /generate` runs the configured API
+  graph, `count > 1` runs sequentially with different seeds, and results are stored as `local:<model file>`.
+- **Packaging and coverage.** `CHANGELOG.md` and `workflow/*.json` ship in `files`, `test/local-check.mjs` covers the
+  ComfyUI client, and `@deepseek-ai/dsh-tools` plus `@deepseek-ai/dsh-client-ui-sidebar-right` are declared as optional
+  peers.
+- New host routes: `GET /workspaces` (the project list from the workspace registry), `POST /gitignore`, `GET /local/status`,
+  a `library` block in `/state` (`source`, `workspaces`, `workspace`, `subdir`, `root`, `git`, `ignored`), and `provider`
+  on `POST /generate`.
 
 ## 0.2.0
 
