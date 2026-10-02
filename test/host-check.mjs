@@ -980,6 +980,9 @@ test('the chat tool is registered exactly once, and a composition without a tool
 	assert.equal(definition.parameters.prompt.required, true, 'the prompt is the one required argument');
 	assert.deepEqual(Object.keys(definition.parameters).sort(), ['aspect', 'count', 'model', 'prompt']);
 	assert.equal(typeof definition.output.render, 'function');
+	assert.deepEqual(Object.keys(definition.output.schema.properties).sort(), [
+		'aspect', 'count', 'images', 'markdown', 'model', 'modelLabel', 'prompt', 'root', 'summary',
+	], 'the declared output is the successful value: a failure throws instead');
 	assert.deepEqual(definition.output.render({}, { summary: 'Generated 1 image.' }), [
 		{ type: 'text', text: 'Generated 1 image.' },
 	]);
@@ -994,7 +997,7 @@ test('the chat tool is registered exactly once, and a composition without a tool
 	assert.equal(tools.registered.length, 1, 'the second mount had no registry to register into');
 });
 
-test('the chat tool explains a missing fal key instead of throwing or touching the network', async () => {
+test('the chat tool reports a missing fal key as a readable error instead of touching the network', async () => {
 	const tools = fakeToolRegistry();
 	mount({ tools });
 	const definition = await waitForTool(tools);
@@ -1008,20 +1011,21 @@ test('the chat tool explains a missing fal key instead of throwing or touching t
 		throw new Error('a generation without a key must not reach the network');
 	};
 	try {
-		const value = await definition.execute({ prompt: 'a chair' }, {});
-		assert.equal(value.ok, false);
-		assert.match(value.error, /key/i, 'the reason names the missing key');
-		assert.match(value.summary, /key/i);
-		assert.deepEqual(value.images, []);
+		// The call is marked failed, so the model reads the reason as an error
+		// rather than as a result it might mistake for success.
+		const error = await definition.execute({ prompt: 'a chair' }, {})
+			.then(() => { throw new Error('a missing key must reject the call'); }, (thrown) => thrown);
+		assert.ok(error instanceof Error);
+		assert.match(error.message, /key/i, 'the reason names the missing key');
 		assert.equal(touched, 0, 'nothing is spent before the key exists');
-		assert.equal(JSON.stringify(value).includes('key_id:key_secret'), false, 'no credential is echoed back');
+		assert.equal(error.message.includes('key_id:key_secret'), false, 'no credential is echoed back');
 	} finally {
 		globalThis.fetch = realFetch;
 		if (savedKey !== undefined) process.env.FAL_API_KEY = savedKey;
 	}
 });
 
-test('a fal failure comes back as a readable tool result, never a throw', async () => {
+test('a fal rejection is thrown with a readable reason and no key', async () => {
 	const credentials = fakeCredentials({ FAL_API_KEY: 'fal-id:fal-secret' });
 	const tools = fakeToolRegistry();
 	mount({ credentials, tools });
@@ -1030,13 +1034,21 @@ test('a fal failure comes back as a readable tool result, never a throw', async 
 	const realFetch = globalThis.fetch;
 	globalThis.fetch = async () => new Response(JSON.stringify({ detail: 'no credit left' }), { status: 401 });
 	try {
-		const value = await definition.execute({ prompt: 'a chair' }, {});
-		assert.equal(value.ok, false, 'a provider rejection is an ordinary result');
-		assert.match(value.error, /key is invalid or has no access/i);
-		assert.match(value.summary, /No image was generated/);
-		assert.equal(JSON.stringify(value).includes('fal-secret'), false, 'the key stays out of the result');
+		await assert.rejects(definition.execute({ prompt: 'a chair' }, {}), /key is invalid or has no access/i);
 	} finally {
 		globalThis.fetch = realFetch;
+	}
+
+	// A slug fal does not know is reported just as plainly (HTTP 404).
+	const missing = globalThis.fetch;
+	globalThis.fetch = async () => new Response(JSON.stringify({ detail: 'not found' }), { status: 404 });
+	try {
+		const error = await definition.execute({ prompt: 'a chair', model: 'acme/no-such-endpoint' }, {})
+			.then(() => { throw new Error('an unknown endpoint must reject the call'); }, (thrown) => thrown);
+		assert.match(error.message, /no endpoint named/i);
+		assert.equal(error.message.includes('fal-secret'), false, 'the key stays out of the message');
+	} finally {
+		globalThis.fetch = missing;
 	}
 });
 
@@ -1082,16 +1094,15 @@ test('the chat tool generates through the page path into the project media', asy
 
 	try {
 		// A model that is not a fal slug is refused before anything is spent.
-		const rejected = await definition.execute({ prompt: 'a chair', model: 'not-a-slug' }, {});
-		assert.equal(rejected.ok, false);
-		assert.match(rejected.error, /fal model/i);
+		const rejected = await definition.execute({ prompt: 'a chair', model: 'not-a-slug' }, {})
+			.then(() => { throw new Error('a model that is not a slug must reject the call'); }, (thrown) => thrown);
+		assert.match(rejected.message, /fal endpoint/i);
 		assert.equal(calls.length, 0, 'an unusable model never reaches fal');
 
 		const value = await definition.execute(
 			{ prompt: 'a blue teapot', model: 'acme/custom-image', aspect: '16:9', count: 1 },
 			{},
 		);
-		assert.equal(value.ok, true, value.error);
 		assert.equal(value.model, 'acme/custom-image', 'any fal endpoint slug is accepted');
 		assert.equal(value.aspect, '16:9');
 		assert.equal(value.count, 1);
