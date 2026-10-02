@@ -8,15 +8,21 @@
  *
  * Surface (all under `/api/image-studio`, all loopback-only):
  *
- *   GET  /state                          catalogue, defaults, credential status, counts
+ *   GET  /state                          catalogue, defaults, credential status, counts, library
  *   GET  /gallery?kind=&q=&favorite=     the index the page renders
  *   GET  /file?id=                       media bytes for one entry
+ *   GET  /workspaces                     the projects the page may point the library at
  *   POST /credentials                    store or clear the fal key (write-only)
- *   POST /config                         non-secret defaults
+ *   POST /config                         non-secret defaults, including the library source
+ *   POST /gitignore                      add `dsh-media/` to the chosen project's .gitignore
  *   POST /generate                       queue a text-to-image job
  *   POST /video                          queue an image-to-video (Kling) job
  *   GET  /job?id=                        job progress and results
  *   POST /favorite, POST /delete         gallery housekeeping
+ *
+ * The media root is resolved on every request rather than captured at mount, so
+ * the library can be the shared studio or a folder inside a project without a
+ * restart (see `lib/library.js`).
  *
  * A generation is submitted to fal's queue and polled by a background task, so a
  * request never blocks on rendering and the page can be closed and reopened
@@ -71,6 +77,15 @@ import {
 	studioRoot,
 	writeEntryFile,
 } from './lib/gallery.js';
+import {
+	LIBRARY_SOURCES,
+	addGitignoreLine,
+	isUsableWorkspace,
+	listWorkspaces,
+	resolveLibraryRoot,
+	sanitizeLibrarySubdir,
+	workspaceGitState,
+} from './lib/library.js';
 
 // The plan is deliberately narrow: `webServer` for the HTTP surface, and
 // `credentials` because the fal key is read and written through the harness
@@ -106,6 +121,9 @@ const DEFAULTS = {
 	ffmpegPath: '',
 	updateRepo: 'naletko/dsh-image-studio',
 	updateCheck: true,
+	librarySource: 'studio',
+	libraryWorkspace: '',
+	librarySubdir: '',
 };
 
 /**
@@ -133,9 +151,12 @@ function readOwnVersion() {
  * @param config - the row's configuration from the profile patch.
  */
 export function apply(ctx, config) {
-	const root = studioRoot();
+	// The settings file lives in the shared studio and keeps living there: the
+	// library may point into a project, but the switch that points it must not
+	// travel with the project, or a person could never point it back.
+	const settingsRoot = studioRoot();
 	const version = readOwnVersion();
-	const live = { ...DEFAULTS, ...pickConfig(loadStoredConfig(root)), ...pickConfig(config) };
+	const live = { ...DEFAULTS, ...pickConfig(loadStoredConfig(settingsRoot)), ...pickConfig(config) };
 
 	/** In-memory job table: the page polls it, nothing else reads it. */
 	const jobs = new Map();
@@ -219,6 +240,46 @@ export function apply(ctx, config) {
 			pluginManager = undefined;
 		};
 	});
+
+	/**
+	 * The workspace registry, when this deployment mounts one.
+	 *
+	 * It is optional for the same reason the plugin manager is: a composition
+	 * without projects still gets the shared studio, and `/workspaces` answers
+	 * `supported: false` rather than failing.
+	 */
+	let workspaceRegistry;
+	ctx.inject(['workspaceRegistry'], (scope) => {
+		workspaceRegistry = scope.workspaceRegistry;
+		return () => {
+			workspaceRegistry = undefined;
+		};
+	});
+
+	/**
+	 * The media root for the configuration as it stands right now.
+	 *
+	 * Resolved per call, never once at mount: `POST /config` can switch the
+	 * source between two requests, and a route that captured a root would keep
+	 * writing into the folder the person just left.
+	 *
+	 * @returns the absolute library directory.
+	 */
+	const libraryRoot = () => resolveLibraryRoot(live);
+
+	/**
+	 * What the page needs to explain where media is going.
+	 *
+	 * @param root - the library root already resolved for this request.
+	 * @returns the `library` block of `/state`.
+	 */
+	const libraryBlock = (root) => {
+		const { workspaces } = listWorkspaces(workspaceRegistry);
+		const workspace = typeof live.libraryWorkspace === 'string' ? live.libraryWorkspace : '';
+		const subdir = typeof live.librarySubdir === 'string' ? live.librarySubdir : '';
+		const { git, ignored } = workspaceGitState(workspace);
+		return { source: live.librarySource, workspaces, workspace, subdir, root, git, ignored };
+	};
 
 	/** Last check result, kept so a page reopen does not re-ask GitHub. */
 	let updateCache;
@@ -324,13 +385,14 @@ export function apply(ctx, config) {
 	/**
 	 * Store one downloaded medium under a fresh id.
 	 *
+	 * @param root - the library root the request resolved.
 	 * @param meta - gallery fields except the id, extension, mime, and byte count.
 	 * @param bytes - the media itself.
 	 * @param contentType - type reported by the provider or the download.
 	 * @param fallbackExt - extension used when the type is unknown.
 	 * @returns the stored entry.
 	 */
-	const storeMedia = (meta, bytes, contentType, fallbackExt) => writeEntryFile(root, {
+	const storeMedia = (root, meta, bytes, contentType, fallbackExt) => writeEntryFile(root, {
 		id: newId(),
 		bytes,
 		ext: extensionForMime(contentType, fallbackExt),
@@ -340,8 +402,12 @@ export function apply(ctx, config) {
 	/**
 	 * Run one text-to-image job: submit, poll, download every produced image,
 	 * append them to the gallery, and report progress as the queue moves.
+	 *
+	 * @param job - the job record.
+	 * @param root - the library root the request resolved; the job keeps writing
+	 *   there even if the configuration changes while it runs.
 	 */
-	const runImageJob = async (job) => {
+	const runImageJob = async (job, root) => {
 		try {
 			const key = await resolveFalKey();
 			const problem = falKeyProblem(key.value);
@@ -377,7 +443,7 @@ export function apply(ctx, config) {
 			const entries = [];
 			for (const [index, item] of produced.entries()) {
 				const fetched = await fetchBytes(item.url);
-				entries.push(storeMedia({
+				entries.push(storeMedia(root, {
 					createdAt: Date.now(),
 					index,
 					kind: 'image',
@@ -402,8 +468,11 @@ export function apply(ctx, config) {
 	/**
 	 * Run one video job. An image-to-video endpoint receives the chosen still as
 	 * a data URI, which is how fal accepts a local file without an upload step.
+	 *
+	 * @param job - the job record.
+	 * @param root - the library root the request resolved.
 	 */
-	const runVideoJob = async (job) => {
+	const runVideoJob = async (job, root) => {
 		try {
 			const key = await resolveFalKey();
 			const problem = falKeyProblem(key.value);
@@ -444,7 +513,7 @@ export function apply(ctx, config) {
 			if (video === undefined) throw new FalError('fal finished without returning a video.', 'fal-empty-result');
 
 			const fetched = await fetchBytes(video.url);
-			const entry = storeMedia({
+			const entry = storeMedia(root, {
 				createdAt: Date.now(),
 				index: 0,
 				kind: 'video',
@@ -468,8 +537,11 @@ export function apply(ctx, config) {
 	/**
 	 * Run one montage: normalize every chosen entry into a uniform clip, join
 	 * them, and store the result in the gallery like any other video.
+	 *
+	 * @param job - the job record.
+	 * @param root - the library root the request resolved.
 	 */
-	const runMontageJob = async (job) => {
+	const runMontageJob = async (job, root) => {
 		const workDir = montageWorkDirectory(root, job.id);
 		try {
 			const executable = resolveFfmpeg({ override: live.ffmpegPath });
@@ -508,7 +580,7 @@ export function apply(ctx, config) {
 				},
 			});
 
-			const entry = storeMedia({
+			const entry = storeMedia(root, {
 				createdAt: Date.now(),
 				index: 0,
 				kind: 'video',
@@ -546,6 +618,10 @@ export function apply(ctx, config) {
 			}
 
 			try {
+				// Resolved once per request from the configuration as it stands now,
+				// so switching the library source needs no restart.
+				const root = libraryRoot();
+
 				if (route === '/state' && method === 'GET') {
 					const index = pruneMissing(root);
 					sendJson(res, 200, {
@@ -571,8 +647,25 @@ export function apply(ctx, config) {
 						},
 						credentials: { fal: await describeKey() },
 						storage: { root },
+						library: libraryBlock(root),
 						tools: { ffmpeg: await ffmpegInfo() },
 						stats: summarize(index.items),
+					});
+					return;
+				}
+
+				if (route === '/workspaces' && method === 'GET') {
+					// The registry is optional; an absent one answers a valid
+					// "not supported" rather than failing the page.
+					const { supported, workspaces } = listWorkspaces(workspaceRegistry);
+					sendJson(res, 200, {
+						ok: true,
+						supported,
+						workspaces,
+						source: live.librarySource,
+						workspace: typeof live.libraryWorkspace === 'string' ? live.libraryWorkspace : '',
+						subdir: typeof live.librarySubdir === 'string' ? live.librarySubdir : '',
+						root,
 					});
 					return;
 				}
@@ -642,7 +735,16 @@ export function apply(ctx, config) {
 					if (typeof body.defaultModel === 'string' && live.customModels.includes(body.defaultModel) === false && resolveModel(body.defaultModel, 'image')?.custom === true) {
 						live.customModels = sanitizeCustomModels([...live.customModels, body.defaultModel]);
 					}
-					writeStoredConfig(root, pickConfig(live));
+					// The library keys go through the same validation as the profile
+					// patch: an invalid source, project, or subdirectory is dropped
+					// and the previous value stands, so a bad request can never move
+					// the gallery somewhere unexpected.
+					Object.assign(live, pickConfig({
+						librarySource: body.librarySource,
+						libraryWorkspace: body.libraryWorkspace,
+						librarySubdir: body.librarySubdir,
+					}));
+					writeStoredConfig(settingsRoot, pickConfig(live));
 					sendJson(res, 200, {
 						ok: true,
 						config: {
@@ -651,8 +753,24 @@ export function apply(ctx, config) {
 							defaultAspect: live.defaultAspect,
 							defaultCount: live.defaultCount,
 							customModels: Array.isArray(live.customModels) ? live.customModels : [],
+							librarySource: live.librarySource,
+							libraryWorkspace: live.libraryWorkspace,
+							librarySubdir: live.librarySubdir,
 						},
 					});
+					return;
+				}
+
+				if (route === '/gitignore' && method === 'POST') {
+					// Only a project the person explicitly points the library at is
+					// ever touched, and only when it is already a git repository.
+					const workspace = typeof live.libraryWorkspace === 'string' ? live.libraryWorkspace : '';
+					if (workspace === '') {
+						sendJson(res, 200, { ok: true, changed: false, reason: 'no-workspace-selected' });
+						return;
+					}
+					const result = addGitignoreLine(workspace);
+					sendJson(res, result.ok ? 200 : 400, result);
 					return;
 				}
 
@@ -732,7 +850,7 @@ export function apply(ctx, config) {
 						},
 						items: [],
 					});
-					void runImageJob(job);
+					void runImageJob(job, root);
 					sendJson(res, 202, { ok: true, job: publicJob(job) });
 					return;
 				}
@@ -763,7 +881,7 @@ export function apply(ctx, config) {
 						},
 						items: [],
 					});
-					void runVideoJob(job);
+					void runVideoJob(job, root);
 					sendJson(res, 202, { ok: true, job: publicJob(job) });
 					return;
 				}
@@ -796,7 +914,7 @@ export function apply(ctx, config) {
 						},
 						items: [],
 					});
-					void runMontageJob(job);
+					void runMontageJob(job, root);
 					sendJson(res, 202, { ok: true, job: publicJob(job) });
 					return;
 				}
@@ -841,7 +959,7 @@ export function apply(ctx, config) {
 					const fetched = await fetchBytes(url);
 					const looksVideo = String(fetched.contentType ?? '').startsWith('video/')
 						|| /\.(mp4|webm|mov)(\?|$)/i.test(url);
-					const entry = storeMedia({
+					const entry = storeMedia(root, {
 						createdAt: Date.now(),
 						index: 0,
 						kind: looksVideo ? 'video' : 'image',
@@ -999,6 +1117,10 @@ export function pickConfig(source) {
 	if (typeof source.ffmpegPath === 'string') out.ffmpegPath = source.ffmpegPath;
 	if (typeof source.updateRepo === 'string' && /^[\w.-]+\/[\w.-]+$/.test(source.updateRepo)) out.updateRepo = source.updateRepo;
 	if (typeof source.updateCheck === 'boolean') out.updateCheck = source.updateCheck;
+	if (LIBRARY_SOURCES.includes(source.librarySource)) out.librarySource = source.librarySource;
+	if (isUsableWorkspace(source.libraryWorkspace)) out.libraryWorkspace = path.resolve(source.libraryWorkspace.trim());
+	const subdir = sanitizeLibrarySubdir(source.librarySubdir);
+	if (subdir !== undefined) out.librarySubdir = subdir;
 	return out;
 }
 

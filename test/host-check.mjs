@@ -27,6 +27,29 @@ const PNG = Buffer.from(
 const manifest = JSON.parse(fs.readFileSync(path.join(import.meta.dirname, '..', 'package.json'), 'utf8'));
 
 /**
+ * A scratch directory standing in for a person's project.
+ *
+ * @param label - prefix that makes a failing test's leftovers identifiable.
+ * @returns the absolute project directory, already created.
+ */
+function makeWorkspaceDir(label = 'ws') {
+	const dir = path.join(import.meta.dirname, '.tmp', `${label}-${newId()}`);
+	fs.mkdirSync(dir, { recursive: true });
+	return dir;
+}
+
+/** Answer one import request with a real PNG, without touching the network. */
+async function importPng(handler, url = 'https://cdn.example.com/pic.png') {
+	const realFetch = globalThis.fetch;
+	globalThis.fetch = async () => new Response(PNG, { status: 200, headers: { 'content-type': 'image/png' } });
+	try {
+		return await call(handler, makeRequest({ url: '/api/image-studio/import', method: 'POST', body: { url } }));
+	} finally {
+		globalThis.fetch = realFetch;
+	}
+}
+
+/**
  * Answer the two GitHub endpoints the updater reads.
  *
  * @param options.version - the version the branch claims.
@@ -130,9 +153,10 @@ async function call(handler, request) {
  * @param options.credentials - an in-memory credential store.
  * @param options.config - the row configuration.
  * @param options.pluginManager - a stand-in for the harness plugin manager.
+ * @param options.workspaceRegistry - a stand-in for the project registry.
  * @returns `{ handler, root, credentials }`.
  */
-function mount({ credentials = fakeCredentials(), config = {}, pluginManager } = {}) {
+function mount({ credentials = fakeCredentials(), config = {}, pluginManager, workspaceRegistry } = {}) {
 	const root = path.join(import.meta.dirname, '.tmp', `host-${newId()}`);
 	fs.mkdirSync(root, { recursive: true });
 	process.env.DSH_IMAGE_STUDIO_HOME = root;
@@ -143,6 +167,7 @@ function mount({ credentials = fakeCredentials(), config = {}, pluginManager } =
 		credentials,
 	};
 	if (pluginManager !== undefined) services.pluginManager = pluginManager;
+	if (workspaceRegistry !== undefined) services.workspaceRegistry = workspaceRegistry;
 
 	const ctx = {
 		effect: (fn) => fn(),
@@ -664,4 +689,195 @@ test('a public entry never carries the provider URL', () => {
 	const entry = publicEntry({ id: 'a'.repeat(24), ext: 'png', kind: 'image', mime: 'image/png', sourceUrl: 'https://cdn/secret' });
 	assert.equal('sourceUrl' in entry, false);
 	assert.equal(entry.url, `/api/image-studio/file?id=${'a'.repeat(24)}`);
+});
+
+test('a project library is created, written, and read back', async () => {
+	const workspace = makeWorkspaceDir('project');
+	const { handler, root } = mount({ config: { librarySource: 'workspace', libraryWorkspace: workspace } });
+	const mediaRoot = path.join(path.resolve(workspace), 'dsh-media');
+
+	const state = parse(await call(handler, makeRequest({ url: '/api/image-studio/state' })));
+	assert.equal(state.library.source, 'workspace');
+	assert.equal(state.library.workspace, path.resolve(workspace));
+	assert.equal(state.library.subdir, '');
+	assert.equal(state.library.root, mediaRoot);
+	assert.equal(state.storage.root, mediaRoot, 'the studio reports the root it actually used');
+	assert.equal(fs.existsSync(mediaRoot), true, 'picking a project creates its media folder');
+
+	const imported = parse(await importPng(handler));
+	assert.equal(imported.ok, true);
+	const media = await call(handler, makeRequest({ url: `/api/image-studio/file?id=${imported.item.id}` }));
+	assert.deepEqual(media.raw, PNG);
+	assert.equal(fs.existsSync(path.join(mediaRoot, 'gallery.json')), true, 'the index lives with the project media');
+	assert.equal(fs.existsSync(path.join(root, 'gallery.json')), false, 'the shared studio is not touched');
+});
+
+test('the library root follows the configuration without a restart', async () => {
+	const workspace = makeWorkspaceDir('switch');
+	const { handler, root } = mount({ config: { librarySource: 'workspace', libraryWorkspace: workspace } });
+
+	assert.equal(parse(await importPng(handler)).ok, true);
+	assert.equal(parse(await call(handler, makeRequest({ url: '/api/image-studio/gallery' }))).items.length, 1);
+
+	const toStudio = parse(await call(handler, makeRequest({
+		url: '/api/image-studio/config', method: 'POST', body: { librarySource: 'studio' },
+	})));
+	assert.equal(toStudio.config.librarySource, 'studio');
+	assert.equal(parse(await call(handler, makeRequest({ url: '/api/image-studio/gallery' }))).items.length, 0,
+		'the shared studio is a different, empty gallery');
+
+	const back = parse(await call(handler, makeRequest({
+		url: '/api/image-studio/config', method: 'POST', body: { librarySource: 'workspace' },
+	})));
+	assert.equal(back.config.librarySource, 'workspace');
+	assert.equal(back.config.libraryWorkspace, path.resolve(workspace), 'the project survives the round trip');
+	assert.equal(parse(await call(handler, makeRequest({ url: '/api/image-studio/gallery' }))).items.length, 1,
+		'the project gallery is still there after switching away and back');
+
+	// The switch itself is stored in the shared studio, not in the project: a
+	// settings file inside the project could never point the library back out.
+	const stored = JSON.parse(fs.readFileSync(path.join(root, 'config.json'), 'utf8'));
+	assert.equal(stored.librarySource, 'workspace');
+	assert.equal(fs.existsSync(path.join(path.resolve(workspace), 'dsh-media', 'config.json')), false);
+});
+
+test('invalid library configuration is refused, never coerced', async () => {
+	// Unit level: every dangerous spelling is dropped, so the key keeps its
+	// previous value instead of pointing the library somewhere else.
+	assert.deepEqual(pickConfig({ librarySource: 'somewhere' }), {});
+	assert.deepEqual(pickConfig({ librarySubdir: '..' }), {});
+	assert.deepEqual(pickConfig({ librarySubdir: '../outside' }), {});
+	assert.deepEqual(pickConfig({ librarySubdir: 'a/../../b' }), {});
+	assert.deepEqual(pickConfig({ librarySubdir: '/etc' }), {});
+	assert.deepEqual(pickConfig({ librarySubdir: 'C:\\Users' }), {});
+	assert.deepEqual(pickConfig({ librarySubdir: '..\\sibling' }), {});
+	assert.deepEqual(pickConfig({ librarySubdir: 'a//b' }), {});
+	assert.deepEqual(pickConfig({ librarySubdir: 'a/b/c/d' }), {});
+	assert.deepEqual(pickConfig({ libraryWorkspace: 'relative/project' }), {});
+	assert.deepEqual(pickConfig({ libraryWorkspace: path.join(import.meta.dirname, 'no-such-project') }), {},
+		'a project directory must already exist');
+	assert.deepEqual(pickConfig({ librarySubdir: 'shots.2026/renders' }), { librarySubdir: 'shots.2026/renders' });
+
+	const project = makeWorkspaceDir('valid');
+	assert.deepEqual(
+		pickConfig({ librarySource: 'workspace', libraryWorkspace: project, librarySubdir: '' }),
+		{ librarySource: 'workspace', libraryWorkspace: path.resolve(project), librarySubdir: '' },
+	);
+
+	// Route level: a hostile request leaves the effective configuration alone.
+	const { handler, root } = mount();
+	const rejected = parse(await call(handler, makeRequest({
+		url: '/api/image-studio/config',
+		method: 'POST',
+		body: { librarySource: 'elsewhere', libraryWorkspace: 'relative/project', librarySubdir: '../../..' },
+	})));
+	assert.equal(rejected.config.librarySource, 'studio');
+	assert.equal(rejected.config.libraryWorkspace, '');
+	assert.equal(rejected.config.librarySubdir, '');
+	const state = parse(await call(handler, makeRequest({ url: '/api/image-studio/state' })));
+	assert.equal(state.library.source, 'studio');
+	assert.equal(state.library.root, root, 'the shared studio stays the root');
+
+	// A valid request is accepted, and the page sees the new root at once.
+	const acceptedProject = makeWorkspaceDir('accepted');
+	const accepted = parse(await call(handler, makeRequest({
+		url: '/api/image-studio/config',
+		method: 'POST',
+		body: { librarySource: 'workspace', libraryWorkspace: acceptedProject, librarySubdir: 'renders' },
+	})));
+	assert.equal(accepted.config.librarySource, 'workspace');
+	assert.equal(accepted.config.libraryWorkspace, path.resolve(acceptedProject));
+	assert.equal(accepted.config.librarySubdir, 'renders');
+	const moved = parse(await call(handler, makeRequest({ url: '/api/image-studio/state' })));
+	assert.equal(moved.library.root, path.join(path.resolve(acceptedProject), 'dsh-media', 'renders'));
+	assert.equal(fs.existsSync(moved.library.root), true);
+});
+
+test('a subdirectory nests the media folder and cannot escape the project', async () => {
+	const workspace = makeWorkspaceDir('nested');
+	const { handler } = mount({
+		config: { librarySource: 'workspace', libraryWorkspace: workspace, librarySubdir: 'shots/2026' },
+	});
+	const nested = path.join(path.resolve(workspace), 'dsh-media', 'shots', '2026');
+	assert.equal(parse(await call(handler, makeRequest({ url: '/api/image-studio/state' }))).library.root, nested);
+	assert.equal(fs.existsSync(nested), true);
+
+	const hostile = parse(await call(handler, makeRequest({
+		url: '/api/image-studio/config', method: 'POST', body: { librarySubdir: '../../..' },
+	})));
+	assert.equal(hostile.config.librarySubdir, 'shots/2026', 'a traversal never replaces a valid subdirectory');
+	const after = parse(await call(handler, makeRequest({ url: '/api/image-studio/state' })));
+	assert.equal(after.library.root, nested);
+	assert.equal(after.library.subdir, 'shots/2026');
+});
+
+test('/gitignore adds the media folder once, and only inside a repository', async () => {
+	const repo = makeWorkspaceDir('repo');
+	fs.mkdirSync(path.join(repo, '.git'));
+	fs.writeFileSync(path.join(repo, '.gitignore'), 'node_modules\n', 'utf8');
+
+	const { handler } = mount({ config: { librarySource: 'workspace', libraryWorkspace: repo } });
+	const first = parse(await call(handler, makeRequest({ url: '/api/image-studio/gitignore', method: 'POST' })));
+	assert.equal(first.ok, true);
+	assert.equal(first.changed, true);
+	const content = fs.readFileSync(path.join(repo, '.gitignore'), 'utf8');
+	assert.match(content, /^dsh-media\/$/m);
+	assert.match(content, /^node_modules$/m, 'existing lines are kept');
+
+	const second = parse(await call(handler, makeRequest({ url: '/api/image-studio/gitignore', method: 'POST' })));
+	assert.equal(second.changed, false, 'a second request changes nothing');
+	assert.equal(content.split(/\r?\n/).filter((line) => line.trim() === 'dsh-media/').length, 1);
+
+	const state = parse(await call(handler, makeRequest({ url: '/api/image-studio/state' })));
+	assert.equal(state.library.git, true);
+	assert.equal(state.library.ignored, true);
+
+	// A folder that is not a repository is never written to.
+	const plain = makeWorkspaceDir('plain');
+	const plainMount = mount({ config: { librarySource: 'workspace', libraryWorkspace: plain } });
+	const nothing = parse(await call(plainMount.handler, makeRequest({ url: '/api/image-studio/gitignore', method: 'POST' })));
+	assert.equal(nothing.ok, true);
+	assert.equal(nothing.changed, false);
+	assert.equal(fs.existsSync(path.join(plain, '.gitignore')), false);
+
+	// With the shared studio there is no project to ignore anything in.
+	const studioMount = mount();
+	const none = parse(await call(studioMount.handler, makeRequest({ url: '/api/image-studio/gitignore', method: 'POST' })));
+	assert.equal(none.ok, true);
+	assert.equal(none.changed, false);
+});
+
+test('/workspaces maps the project registry, and stays valid without one', async () => {
+	const without = mount();
+	const unsupported = parse(await call(without.handler, makeRequest({ url: '/api/image-studio/workspaces' })));
+	assert.equal(unsupported.ok, true);
+	assert.equal(unsupported.supported, false, 'a composition without projects still answers');
+	assert.deepEqual(unsupported.workspaces, []);
+	assert.equal(unsupported.source, 'studio');
+	assert.equal(unsupported.root, without.root);
+
+	const projectA = path.resolve('demo-project-a');
+	const projectB = path.resolve('demo-project-b');
+	const registry = {
+		list: () => [
+			{ id: 'a', title: 'Demo A', path: projectA },
+			{ id: 'b', title: '', path: projectB },
+			{ id: 'c', title: 'no directory' },
+		],
+	};
+	const { handler } = mount({ workspaceRegistry: registry });
+	const listed = parse(await call(handler, makeRequest({ url: '/api/image-studio/workspaces' })));
+	assert.equal(listed.supported, true);
+	assert.deepEqual(listed.workspaces, [
+		{ name: 'Demo A', dir: projectA },
+		{ name: projectB, dir: projectB },
+	], 'the entity title is the name and its canonical path is the directory');
+
+	const state = parse(await call(handler, makeRequest({ url: '/api/image-studio/state' })));
+	assert.equal(state.library.workspaces.length, 2);
+
+	const broken = mount({ workspaceRegistry: { list: () => { throw new Error('storage offline'); } } });
+	const degraded = parse(await call(broken.handler, makeRequest({ url: '/api/image-studio/workspaces' })));
+	assert.equal(degraded.ok, true);
+	assert.equal(degraded.supported, false, 'a broken registry degrades instead of failing the page');
 });
